@@ -142,7 +142,7 @@ def generate_application(data):
 
     # Save job page PDF (captured during scraping)
     if data.get("webpage_pdf_bytes"):
-        webpage_pdf = os.path.join(output_folder, "Webpage.pdf")
+        webpage_pdf = os.path.join(output_folder, "Position Description.pdf")
         with open(webpage_pdf, "wb") as f:
             f.write(data["webpage_pdf_bytes"])
         print(f"  Job page PDF: {webpage_pdf}")
