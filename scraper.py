@@ -51,7 +51,6 @@ def scrape_workday(url):
 
         title = page.locator("h2[data-automation-id='jobPostingHeader']").inner_text()
         description = page.locator("div[data-automation-id='jobPostingDescription']").inner_text()
-        html_content = page.content()
 
         browser.close()
 
@@ -65,15 +64,15 @@ def scrape_workday(url):
         "responsibilities": responsibilities,
         "qualifications": qualifications,
         "url": url,
-        "html": html_content,
     }
 
 
-def save_page_as_pdf(html, url, output_path):
+def save_page_as_pdf(url, output_path):
+    """Navigate to URL in headless browser and save as PDF."""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.set_content(html, base_url=url, wait_until="networkidle")
+        page.goto(url, timeout=60000, wait_until="networkidle")
         page.pdf(path=output_path, format="A4", print_background=True)
         browser.close()
     print(f"  Job page PDF: {output_path}")

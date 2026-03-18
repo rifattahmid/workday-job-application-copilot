@@ -4,11 +4,11 @@ import shutil
 from datetime import datetime
 from docx import Document
 from docx2pdf import convert
+import anthropic
 
 OUTPUT_BASE = r"X:\Career & Networking\Resumes\2026\AU"
 TEMPLATE_BASE = r"X:\Career & Networking\Resumes\2026\AU\0"
 
-# Matches dates like "19 March 2025"
 DATE_PATTERN = re.compile(r"\d{1,2}\s+\w+\s+20\d{2}")
 
 
@@ -50,11 +50,6 @@ def get_paths(category):
 
 
 def _apply_replacements(para, replacements):
-    """
-    Replace placeholders in a paragraph.
-    Tries per-run first (preserves all run formatting).
-    Falls back to collapsing runs if placeholder spans multiple runs.
-    """
     if not any(old in para.text for old in replacements):
         return
 
@@ -64,7 +59,7 @@ def _apply_replacements(para, replacements):
             if old in run.text:
                 run.text = run.text.replace(old, new)
 
-    # Cross-run fallback for anything still unresolved
+    # Cross-run fallback
     unresolved = {old: new for old, new in replacements.items() if old in para.text}
     if unresolved and para.runs:
         merged = para.text
@@ -76,14 +71,12 @@ def _apply_replacements(para, replacements):
 
 
 def _apply_date(para, today):
-    """Replace a date-like string, with cross-run fallback."""
     if not DATE_PATTERN.search(para.text):
         return
     for run in para.runs:
         if DATE_PATTERN.search(run.text):
             run.text = DATE_PATTERN.sub(today, run.text)
             return
-    # Cross-run fallback
     if para.runs:
         para.runs[0].text = DATE_PATTERN.sub(today, para.text)
         for run in para.runs[1:]:
@@ -91,7 +84,6 @@ def _apply_date(para, today):
 
 
 def _debug_placeholders(doc):
-    """Print all lines containing '_' so we can verify placeholder text."""
     print("\n=== TEMPLATE LINES CONTAINING '_' ===")
     found = False
     for para in doc.paragraphs:
@@ -99,7 +91,7 @@ def _debug_placeholders(doc):
             print(f"  {repr(para.text)}")
             found = True
     if not found:
-        print("  (none found — check your template uses _ as placeholder)")
+        print("  (none found — placeholders may not use _ character)")
     print("======================================\n")
 
 
@@ -129,33 +121,50 @@ def update_cover_letter(path, company, strategy, region):
     print(f"  Cover letter saved: {path}")
 
 
-def parse_claude_output(text):
+def infer_strategy_region(title, company, intro, responsibilities, qualifications, resume_text):
+    """Use Claude API to infer investment strategy and region from job description."""
+    print("\nAsking Claude to infer strategy and region...")
+
+    client = anthropic.Anthropic()
+
+    prompt = f"""You are helping tailor a finance cover letter. Based on the job description below, identify:
+1. STRATEGY: The investment strategy (e.g. real assets, credit, equities, infrastructure, private equity, multi-asset)
+2. REGION: The geographic focus (e.g. Asia-Pacific, Australia, Global, Americas, EMEA)
+
+ROLE: {title}
+COMPANY: {company}
+
+INTRO:
+{intro}
+
+RESPONSIBILITIES:
+{responsibilities}
+
+QUALIFICATIONS:
+{qualifications}
+
+Return ONLY these two lines:
+STRATEGY: [value]
+REGION: [value]"""
+
+    message = client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=100,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    response = message.content[0].text.strip()
+    print(f"  Claude response: {response}")
+
     strategy = region = ""
-    for line in text.splitlines():
+    for line in response.splitlines():
         upper = line.upper().strip()
         if upper.startswith("STRATEGY:"):
             strategy = line.split(":", 1)[1].strip()
         elif upper.startswith("REGION:"):
             region = line.split(":", 1)[1].strip()
+
     return strategy, region
-
-
-def collect_multiline_input(prompt):
-    """Read pasted input; stops on two consecutive blank lines."""
-    print(prompt)
-    lines = []
-    blank_count = 0
-    while True:
-        line = input()
-        if line == "":
-            blank_count += 1
-            if blank_count >= 2:
-                break
-            lines.append(line)
-        else:
-            blank_count = 0
-            lines.append(line)
-    return "\n".join(lines).strip()
 
 
 def generate_application(data):
@@ -174,38 +183,33 @@ def generate_application(data):
     shutil.copy(cover_docx, cover_dest)
 
     # Save job description page as PDF
-    if data.get("html") and data.get("url"):
+    if data.get("url"):
         from scraper import save_page_as_pdf
         webpage_pdf = os.path.join(output_folder, "Webpage.pdf")
         try:
-            save_page_as_pdf(data["html"], data["url"], webpage_pdf)
+            save_page_as_pdf(data["url"], webpage_pdf)
         except Exception as e:
             print(f"  WARNING: Could not save job page PDF ({e})")
 
     with open(resume_txt, "r", encoding="utf-8") as f:
         resume_text = f.read()
 
-    print("\n=== PASTE INTO CLAUDE ===\n")
-    print(f"ROLE: {title}")
-    print(f"COMPANY: {company}")
-    print("\nINTRO:\n", data.get("intro", "")[:500])
-    print("\nRESPONSIBILITIES:\n", data.get("responsibilities", "")[:800])
-    print("\nQUALIFICATIONS:\n", data.get("qualifications", "")[:800])
-    print("\nRESUME:\n", resume_text[:1000])
-    print("\n=== EXPECTED OUTPUT FORMAT ===")
-    print("STRATEGY: [e.g. real assets / credit / equities]")
-    print("REGION: [e.g. Asia-Pacific / Global]")
-
-    claude_text = collect_multiline_input(
-        "\nPaste Claude's output below (press Enter TWICE when done):"
+    # Auto-infer strategy and region via Claude API
+    strategy, region = infer_strategy_region(
+        title, company,
+        data.get("intro", ""),
+        data.get("responsibilities", ""),
+        data.get("qualifications", ""),
+        resume_text,
     )
-
-    strategy, region = parse_claude_output(claude_text)
 
     if not strategy:
         strategy = input("Could not parse STRATEGY. Enter manually: ").strip()
     if not region:
         region = input("Could not parse REGION. Enter manually: ").strip()
+
+    print(f"\n  Strategy: {strategy}")
+    print(f"  Region:   {region}")
 
     update_cover_letter(cover_dest, company, strategy, region)
 
