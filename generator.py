@@ -1,18 +1,16 @@
 import os
 import re
 import shutil
+import anthropic
 from datetime import datetime
 from docx import Document
 from docx2pdf import convert
-import anthropic
 from dotenv import load_dotenv
+
 load_dotenv()
 
 OUTPUT_BASE = r"X:\Career & Networking\Resumes\2026\AU"
 TEMPLATE_BASE = r"X:\Career & Networking\Resumes\2026\AU\0"
-
-DATE_PATTERN = re.compile(r"\d{1,2}\s+\w+\s+20\d{2}")
-
 
 def classify_job(title, description):
     text = (title + " " + description).lower()
@@ -27,7 +25,6 @@ def get_paths(category):
         raise FileNotFoundError(f"Template folder not found: {base}")
 
     resume_pdf = cover_docx = resume_txt = None
-
     for f in os.listdir(base):
         f_lower = f.lower()
         if f_lower.endswith(".pdf") and "resume" in f_lower:
@@ -47,79 +44,90 @@ def get_paths(category):
     ]
     if missing:
         raise FileNotFoundError(f"Missing in {base}: {', '.join(missing)}")
-
     return resume_pdf, cover_docx, resume_txt
 
 
-def _set_para_text(para, text):
-    """Replace paragraph text, preserving the first run's formatting."""
-    if para.runs:
-        para.runs[0].text = text
-        for run in para.runs[1:]:
-            run.text = ""
-    else:
-        para.add_run(text)
+def _replace_in_runs(para, old, new):
+    """Replace text per-run. Returns True if any replacement was made."""
+    changed = False
+    for run in para.runs:
+        if old in run.text:
+            run.text = run.text.replace(old, new)
+            changed = True
+    return changed
 
 
-def fill_cover_letter(path, title, company, intro, responsibilities, qualifications):
+def fill_cover_letter(path, company, title, intro, responsibilities, qualifications):
     doc = Document(path)
     today = datetime.now().strftime("%d %B %Y")
+    date_like = re.compile(r"\d{1,2}[\s/]\w+[\s/]\d{4}|\w+\s+\d{1,2},?\s+\d{4}")
 
-    # Update date lines (actual date in template → today)
-    for para in doc.paragraphs:
-        if DATE_PATTERN.search(para.text):
-            _set_para_text(para, DATE_PATTERN.sub(today, para.text))
+    # Only collect paragraphs that actually need updating (date or _ blanks)
+    # This avoids touching signature/hyperlink paragraphs
+    to_update = [
+        (i, para) for i, para in enumerate(doc.paragraphs)
+        if "_" in para.text or date_like.search(para.text)
+    ]
 
-    # Find all paragraphs still containing _ blanks
-    blank_paras = [(i, para) for i, para in enumerate(doc.paragraphs) if "_" in para.text]
-
-    print("\n=== BLANKS FOUND IN TEMPLATE ===")
-    for _, para in blank_paras:
-        print(f"  {repr(para.text)}")
-    print("=================================\n")
-
-    if not blank_paras:
+    if not to_update:
         doc.save(path)
-        print(f"  Cover letter saved: {path}")
+        print(f"  Cover letter saved (nothing to update): {path}")
         return
 
-    # Ask Claude to fill every blank
-    numbered_lines = "\n".join(f"{i+1}. {para.text}" for i, (_, para) in enumerate(blank_paras))
+    numbered = "\n".join(f"{j+1}. {para.text}" for j, (_, para) in enumerate(to_update))
+    print(f"\n=== LINES TO UPDATE ===\n{numbered}\n=======================\n")
 
     client = anthropic.Anthropic()
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=800,
-        messages=[{"role": "user", "content": f"""Fill ALL blanks (marked with _) in these cover letter lines.
+        max_tokens=1000,
+        messages=[{"role": "user", "content": f"""Update these cover letter lines only. Return all of them numbered the same way.
 
-Role: {title}
-Company: {company}
 Today: {today}
+Role: {title}
+Company (USE THIS EXACT NAME, never modify or expand it): {company}
 
-Job description:
-{intro}
+Job intro: {intro[:600]}
+Responsibilities: {responsibilities[:500]}
+Qualifications: {qualifications[:300]}
 
-Responsibilities:
-{responsibilities}
+Lines to update:
+{numbered}
 
-Lines to fill:
-{numbered_lines}
-
-Return ONLY the filled lines, numbered the same way. Replace every _ with the correct value.
-Use {company} for company blanks. Infer investment strategy and region from the job description."""}]
+Rules:
+- If a line has a date, replace it with: {today}
+- If a line has _ blanks, fill each one with the best value based on context
+- For any company blank, use EXACTLY: {company}
+- For any role/position blank, use EXACTLY: {title}
+- Infer investment strategy (e.g. real assets, credit, equities, infrastructure) and region (e.g. Asia-Pacific, Global, Australia) from the job description
+- Do NOT rephrase or rewrite — only fill in the blanks and update dates
+- Return ONLY the numbered lines, nothing else"""}]
     )
 
     response = message.content[0].text.strip()
-    print(f"  Claude filled blanks:\n{response}\n")
+    print(f"  Claude output:\n{response}\n")
 
-    # Parse numbered responses and apply
     for line in response.splitlines():
-        match = re.match(r'^(\d+)\.\s*(.+)$', line.strip())
-        if match:
-            idx = int(match.group(1)) - 1
-            if 0 <= idx < len(blank_paras):
-                _, para = blank_paras[idx]
-                _set_para_text(para, match.group(2).strip())
+        m = re.match(r'^(\d+)\.\s*(.+)$', line.strip())
+        if not m:
+            continue
+        idx = int(m.group(1)) - 1
+        if not (0 <= idx < len(to_update)):
+            continue
+        _, para = to_update[idx]
+        new_text = m.group(2).strip()
+
+        if para.text == new_text:
+            continue
+
+        # Per-run pass: replace known patterns in each run individually
+        if not _replace_in_runs(para, para.text, new_text):
+            # Cross-run fallback: safe here because filtered paragraphs
+            # (date/blank lines) don't contain hyperlinks
+            if para.runs:
+                para.runs[0].text = new_text
+                for run in para.runs[1:]:
+                    run.text = ""
 
     doc.save(path)
     print(f"  Cover letter saved: {path}")
@@ -140,18 +148,18 @@ def generate_application(data):
     cover_dest = os.path.join(output_folder, os.path.basename(cover_docx))
     shutil.copy(cover_docx, cover_dest)
 
-    # Save job page PDF (captured during scraping)
-    if data.get("webpage_pdf_bytes"):
-        webpage_pdf = os.path.join(output_folder, "Position Description.pdf")
-        with open(webpage_pdf, "wb") as f:
-            f.write(data["webpage_pdf_bytes"])
-        print(f"  Job page PDF: {webpage_pdf}")
+    # Write position description PDF (captured during scraping while session was live)
+    position_pdf = os.path.join(output_folder, "Position Description.pdf")
+    if data.get("pdf_bytes"):
+        with open(position_pdf, "wb") as f:
+            f.write(data["pdf_bytes"])
+        print(f"  Position description PDF: {position_pdf}")
 
     with open(resume_txt, "r", encoding="utf-8") as f:
-        resume_text = f.read()
+        resume_text = f.read()  # noqa: F841 (available for future use)
 
     fill_cover_letter(
-        cover_dest, title, company,
+        cover_dest, company, title,
         data.get("intro", ""),
         data.get("responsibilities", ""),
         data.get("qualifications", ""),
@@ -160,12 +168,11 @@ def generate_application(data):
     pdf_dest = cover_dest.replace(".docx", ".pdf")
     try:
         convert(cover_dest, pdf_dest)
-        print(f"  Cover letter PDF saved: {pdf_dest}")
+        print(f"  Cover letter PDF: {pdf_dest}")
     except Exception as e:
         print(f"  WARNING: PDF conversion failed ({e})")
         print("  Make sure Microsoft Word is installed and the .docx is not open.")
 
     print(f"\nDone! Saved to: {output_folder}")
     os.startfile(output_folder)
-
     return output_folder

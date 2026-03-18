@@ -52,13 +52,8 @@ def scrape_workday(url):
         title = page.locator("h2[data-automation-id='jobPostingHeader']").inner_text()
         description = page.locator("div[data-automation-id='jobPostingDescription']").inner_text()
 
-        # Capture PDF while page is loaded in the visible browser
-        webpage_pdf_bytes = None
-        try:
-            webpage_pdf_bytes = page.pdf(format="A4", print_background=True)
-            print("  Job page captured.")
-        except Exception as e:
-            print(f"  WARNING: Could not capture job page PDF ({e})")
+        # Save PDF while page is fully loaded with session/styles intact
+        pdf_bytes = page.pdf(format="A4", print_background=True)
 
         browser.close()
 
@@ -72,5 +67,5 @@ def scrape_workday(url):
         "responsibilities": responsibilities,
         "qualifications": qualifications,
         "url": url,
-        "webpage_pdf_bytes": webpage_pdf_bytes,
+        "pdf_bytes": pdf_bytes,
     }
