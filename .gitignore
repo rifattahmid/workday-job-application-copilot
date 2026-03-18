@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Output folders (VERY IMPORTANT for your project)
+outputs/
+*.pdf
+
+# Word temp files
+~$*.docx
+
+# Playwright
+playwright-report/
+test-results/
+
+# Jupyter (if any)
+.ipynb_checkpoints/
+
+# Environment variables
+.env
