@@ -51,16 +51,29 @@ def scrape_workday(url):
 
         title = page.locator("h2[data-automation-id='jobPostingHeader']").inner_text()
         description = page.locator("div[data-automation-id='jobPostingDescription']").inner_text()
-
-        intro, responsibilities, qualifications = extract_sections(description)
+        html_content = page.content()
 
         browser.close()
 
-        return {
-            "title": title,
-            "company": "UNKNOWN",
-            "description": description,
-            "intro": intro,
-            "responsibilities": responsibilities,
-            "qualifications": qualifications
-        }
+    intro, responsibilities, qualifications = extract_sections(description)
+
+    return {
+        "title": title,
+        "company": "UNKNOWN",
+        "description": description,
+        "intro": intro,
+        "responsibilities": responsibilities,
+        "qualifications": qualifications,
+        "url": url,
+        "html": html_content,
+    }
+
+
+def save_page_as_pdf(html, url, output_path):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html, base_url=url, wait_until="networkidle")
+        page.pdf(path=output_path, format="A4", print_background=True)
+        browser.close()
+    print(f"  Job page PDF: {output_path}")
