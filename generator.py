@@ -5,6 +5,8 @@ from datetime import datetime
 from docx import Document
 from docx2pdf import convert
 import anthropic
+from dotenv import load_dotenv
+load_dotenv()
 
 OUTPUT_BASE = r"X:\Career & Networking\Resumes\2026\AU"
 TEMPLATE_BASE = r"X:\Career & Networking\Resumes\2026\AU\0"
