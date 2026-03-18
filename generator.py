@@ -51,122 +51,78 @@ def get_paths(category):
     return resume_pdf, cover_docx, resume_txt
 
 
-def _apply_replacements(para, replacements):
-    if not any(old in para.text for old in replacements):
-        return
-
-    # Per-run pass
-    for run in para.runs:
-        for old, new in replacements.items():
-            if old in run.text:
-                run.text = run.text.replace(old, new)
-
-    # Cross-run fallback
-    unresolved = {old: new for old, new in replacements.items() if old in para.text}
-    if unresolved and para.runs:
-        merged = para.text
-        for old, new in unresolved.items():
-            merged = merged.replace(old, new)
-        para.runs[0].text = merged
-        for run in para.runs[1:]:
-            run.text = ""
-
-
-def _apply_date(para, today):
-    if not DATE_PATTERN.search(para.text):
-        return
-    for run in para.runs:
-        if DATE_PATTERN.search(run.text):
-            run.text = DATE_PATTERN.sub(today, run.text)
-            return
+def _set_para_text(para, text):
+    """Replace paragraph text, preserving the first run's formatting."""
     if para.runs:
-        para.runs[0].text = DATE_PATTERN.sub(today, para.text)
+        para.runs[0].text = text
         for run in para.runs[1:]:
             run.text = ""
+    else:
+        para.add_run(text)
 
 
-def _debug_placeholders(doc):
-    print("\n=== TEMPLATE LINES CONTAINING '_' ===")
-    found = False
-    for para in doc.paragraphs:
-        if "_" in para.text:
-            print(f"  {repr(para.text)}")
-            found = True
-    if not found:
-        print("  (none found — placeholders may not use _ character)")
-    print("======================================\n")
-
-
-def update_cover_letter(path, company, strategy, region):
+def fill_cover_letter(path, title, company, intro, responsibilities, qualifications):
     doc = Document(path)
     today = datetime.now().strftime("%d %B %Y")
 
-    _debug_placeholders(doc)
+    # Update date lines (actual date in template → today)
+    for para in doc.paragraphs:
+        if DATE_PATTERN.search(para.text):
+            _set_para_text(para, DATE_PATTERN.sub(today, para.text))
 
-    replacements = {
-        " at _": f" at {company}",
-        "approach to _ investing": f"approach to {strategy} investing",
-        "in the _ region": f"in the {region} region",
-    }
+    # Find all paragraphs still containing _ blanks
+    blank_paras = [(i, para) for i, para in enumerate(doc.paragraphs) if "_" in para.text]
 
-    all_paragraphs = list(doc.paragraphs)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                all_paragraphs.extend(cell.paragraphs)
+    print("\n=== BLANKS FOUND IN TEMPLATE ===")
+    for _, para in blank_paras:
+        print(f"  {repr(para.text)}")
+    print("=================================\n")
 
-    for para in all_paragraphs:
-        _apply_date(para, today)
-        _apply_replacements(para, replacements)
+    if not blank_paras:
+        doc.save(path)
+        print(f"  Cover letter saved: {path}")
+        return
 
-    doc.save(path)
-    print(f"  Cover letter saved: {path}")
-
-
-def infer_strategy_region(title, company, intro, responsibilities, qualifications, resume_text):
-    """Use Claude API to infer investment strategy and region from job description."""
-    print("\nAsking Claude to infer strategy and region...")
+    # Ask Claude to fill every blank
+    numbered_lines = "\n".join(f"{i+1}. {para.text}" for i, (_, para) in enumerate(blank_paras))
 
     client = anthropic.Anthropic()
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=800,
+        messages=[{"role": "user", "content": f"""Fill ALL blanks (marked with _) in these cover letter lines.
 
-    prompt = f"""You are helping tailor a finance cover letter. Based on the job description below, identify:
-1. STRATEGY: The investment strategy (e.g. real assets, credit, equities, infrastructure, private equity, multi-asset)
-2. REGION: The geographic focus (e.g. Asia-Pacific, Australia, Global, Americas, EMEA)
+Role: {title}
+Company: {company}
+Today: {today}
 
-ROLE: {title}
-COMPANY: {company}
-
-INTRO:
+Job description:
 {intro}
 
-RESPONSIBILITIES:
+Responsibilities:
 {responsibilities}
 
-QUALIFICATIONS:
-{qualifications}
+Lines to fill:
+{numbered_lines}
 
-Return ONLY these two lines:
-STRATEGY: [value]
-REGION: [value]"""
-
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=100,
-        messages=[{"role": "user", "content": prompt}]
+Return ONLY the filled lines, numbered the same way. Replace every _ with the correct value.
+Use {company} for company blanks. Infer investment strategy and region from the job description."""}]
     )
 
     response = message.content[0].text.strip()
-    print(f"  Claude response: {response}")
+    print(f"  Claude filled blanks:\n{response}\n")
 
-    strategy = region = ""
+    # Parse numbered responses and apply
     for line in response.splitlines():
-        upper = line.upper().strip()
-        if upper.startswith("STRATEGY:"):
-            strategy = line.split(":", 1)[1].strip()
-        elif upper.startswith("REGION:"):
-            region = line.split(":", 1)[1].strip()
+        match = re.match(r'^(\d+)\.\s*(.+)$', line.strip())
+        if match:
+            idx = int(match.group(1)) - 1
+            if 0 <= idx < len(blank_paras):
+                _, para = blank_paras[idx]
+                _set_para_text(para, match.group(2).strip())
 
-    return strategy, region
+    doc.save(path)
+    print(f"  Cover letter saved: {path}")
 
 
 def generate_application(data):
@@ -184,36 +140,22 @@ def generate_application(data):
     cover_dest = os.path.join(output_folder, os.path.basename(cover_docx))
     shutil.copy(cover_docx, cover_dest)
 
-    # Save job description page as PDF
-    if data.get("url"):
-        from scraper import save_page_as_pdf
+    # Save job page PDF (captured during scraping)
+    if data.get("webpage_pdf_bytes"):
         webpage_pdf = os.path.join(output_folder, "Webpage.pdf")
-        try:
-            save_page_as_pdf(data["url"], webpage_pdf)
-        except Exception as e:
-            print(f"  WARNING: Could not save job page PDF ({e})")
+        with open(webpage_pdf, "wb") as f:
+            f.write(data["webpage_pdf_bytes"])
+        print(f"  Job page PDF: {webpage_pdf}")
 
     with open(resume_txt, "r", encoding="utf-8") as f:
         resume_text = f.read()
 
-    # Auto-infer strategy and region via Claude API
-    strategy, region = infer_strategy_region(
-        title, company,
+    fill_cover_letter(
+        cover_dest, title, company,
         data.get("intro", ""),
         data.get("responsibilities", ""),
         data.get("qualifications", ""),
-        resume_text,
     )
-
-    if not strategy:
-        strategy = input("Could not parse STRATEGY. Enter manually: ").strip()
-    if not region:
-        region = input("Could not parse REGION. Enter manually: ").strip()
-
-    print(f"\n  Strategy: {strategy}")
-    print(f"  Region:   {region}")
-
-    update_cover_letter(cover_dest, company, strategy, region)
 
     pdf_dest = cover_dest.replace(".docx", ".pdf")
     try:

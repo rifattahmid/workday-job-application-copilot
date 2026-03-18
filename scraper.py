@@ -52,6 +52,14 @@ def scrape_workday(url):
         title = page.locator("h2[data-automation-id='jobPostingHeader']").inner_text()
         description = page.locator("div[data-automation-id='jobPostingDescription']").inner_text()
 
+        # Capture PDF while page is loaded in the visible browser
+        webpage_pdf_bytes = None
+        try:
+            webpage_pdf_bytes = page.pdf(format="A4", print_background=True)
+            print("  Job page captured.")
+        except Exception as e:
+            print(f"  WARNING: Could not capture job page PDF ({e})")
+
         browser.close()
 
     intro, responsibilities, qualifications = extract_sections(description)
@@ -64,15 +72,5 @@ def scrape_workday(url):
         "responsibilities": responsibilities,
         "qualifications": qualifications,
         "url": url,
+        "webpage_pdf_bytes": webpage_pdf_bytes,
     }
-
-
-def save_page_as_pdf(url, output_path):
-    """Navigate to URL in headless browser and save as PDF."""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(url, timeout=60000, wait_until="networkidle")
-        page.pdf(path=output_path, format="A4", print_background=True)
-        browser.close()
-    print(f"  Job page PDF: {output_path}")
