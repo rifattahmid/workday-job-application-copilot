@@ -12,11 +12,53 @@ load_dotenv()
 OUTPUT_BASE = r"X:\Career & Networking\Resumes\2026\AU"
 TEMPLATE_BASE = r"X:\Career & Networking\Resumes\2026\AU\0"
 
+DATE_PATTERN = re.compile(r"\d{1,2}\s+\w+\s+20\d{2}")
+
+
+def _set_para_text(para, text):
+    """Replace paragraph text preserving the first run's formatting (used for dates)."""
+    if para.runs:
+        para.runs[0].text = text
+        for run in para.runs[1:]:
+            run.text = ""
+    else:
+        para.add_run(text)
+
+
 def classify_job(title, description):
+    """Match job to a template subfolder. Reads available folders dynamically."""
     text = (title + " " + description).lower()
-    if "account" in text:
-        return "accounting"
-    return "finance"
+    available = [
+        f for f in os.listdir(TEMPLATE_BASE)
+        if os.path.isdir(os.path.join(TEMPLATE_BASE, f))
+    ]
+
+    # Keyword map — extend as new folders are added
+    keywords = {
+        "investment": ["investment", "investor", "portfolio", "asset management",
+                       "acquisition", "fund", "equity", "credit", "real estate",
+                       "real assets", "infrastructure", "capital markets"],
+        "accounting": ["account", "audit", "tax", "bookkeep", "controller",
+                       "cpa", "chartered accountant"],
+        "finance":    ["finance", "financial", "fp&a", "treasury", "budget",
+                       "forecast", "analyst"],
+    }
+
+    scores = {folder: 0 for folder in available}
+    for folder in available:
+        for kw in keywords.get(folder, []):
+            if kw in text:
+                scores[folder] += 1
+
+    best = max(scores, key=lambda f: scores[f]) if scores else available[0]
+    # Tie-break: prefer more specific folders over "finance"
+    if all(v == scores[best] for v in scores.values()):
+        for preferred in ("investment", "accounting"):
+            if preferred in available:
+                best = preferred
+                break
+    print(f"  Job classified as: {best}  (scores: {scores})")
+    return best
 
 
 def get_paths(category):
@@ -47,87 +89,106 @@ def get_paths(category):
     return resume_pdf, cover_docx, resume_txt
 
 
-def _replace_in_runs(para, old, new):
-    """Replace text per-run. Returns True if any replacement was made."""
-    changed = False
-    for run in para.runs:
-        if old in run.text:
-            run.text = run.text.replace(old, new)
-            changed = True
-    return changed
+
+def _rebold_title(para, title):
+    """After _set_para_text, split run[0] around `title` and make the title portion bold."""
+    if not para.runs:
+        return
+    text = para.runs[0].text
+    if title not in text:
+        return
+    idx = text.index(title)
+    before = text[:idx]
+    after = text[idx + len(title):]
+    run0 = para.runs[0]
+    # Copy font properties for new runs
+    font_name = run0.font.name
+    font_size = run0.font.size
+    run0.text = before
+    bold_run = para.add_run(title)
+    bold_run.bold = True
+    bold_run.font.name = font_name
+    bold_run.font.size = font_size
+    if after:
+        after_run = para.add_run(after)
+        after_run.bold = False
+        after_run.font.name = font_name
+        after_run.font.size = font_size
 
 
 def fill_cover_letter(path, company, title, intro, responsibilities, qualifications):
     doc = Document(path)
     today = datetime.now().strftime("%d %B %Y")
-    date_like = re.compile(r"\d{1,2}[\s/]\w+[\s/]\d{4}|\w+\s+\d{1,2},?\s+\d{4}")
 
-    # Only collect paragraphs that actually need updating (date or _ blanks)
-    # This avoids touching signature/hyperlink paragraphs
-    to_update = [
-        (i, para) for i, para in enumerate(doc.paragraphs)
-        if "_" in para.text or date_like.search(para.text)
+    # Replace dates (checks full paragraph text to catch cross-run dates)
+    for para in doc.paragraphs:
+        if DATE_PATTERN.search(para.text):
+            _set_para_text(para, DATE_PATTERN.sub(today, para.text))
+
+    # Collect paragraphs with _ blanks and note if any run in that para was bold
+    blank_paras = [
+        (i, para, any(r.bold and "_" in r.text for r in para.runs))
+        for i, para in enumerate(doc.paragraphs) if "_" in para.text
     ]
 
-    if not to_update:
+    print("\n=== BLANKS FOUND IN TEMPLATE ===")
+    for _, para, _ in blank_paras:
+        print(f"  {repr(para.text)}")
+    print("=================================\n")
+
+    if not blank_paras:
         doc.save(path)
-        print(f"  Cover letter saved (nothing to update): {path}")
+        print(f"  Cover letter saved: {path}")
         return
 
-    numbered = "\n".join(f"{j+1}. {para.text}" for j, (_, para) in enumerate(to_update))
-    print(f"\n=== LINES TO UPDATE ===\n{numbered}\n=======================\n")
+    numbered_lines = "\n".join(
+        f"{j+1}. {para.text}" for j, (_, para, _) in enumerate(blank_paras)
+    )
 
     client = anthropic.Anthropic()
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1000,
-        messages=[{"role": "user", "content": f"""Update these cover letter lines only. Return all of them numbered the same way.
+        messages=[{"role": "user", "content": f"""Rewrite each cover letter sentence below, filling every blank (_) and adjusting surrounding words for natural flow.
 
-Today: {today}
 Role: {title}
-Company (USE THIS EXACT NAME, never modify or expand it): {company}
+Company (USE EXACTLY THIS): {company}
+Today: {today}
 
-Job intro: {intro[:600]}
-Responsibilities: {responsibilities[:500]}
-Qualifications: {qualifications[:300]}
+Job description: {intro}
+Responsibilities: {responsibilities}
+Qualifications: {qualifications}
 
-Lines to update:
-{numbered}
+Sentences to rewrite:
+{numbered_lines}
 
 Rules:
-- If a line has a date, replace it with: {today}
-- If a line has _ blanks, fill each one with the best value based on context
-- For any company blank, use EXACTLY: {company}
-- For any role/position blank, use EXACTLY: {title}
-- Infer investment strategy (e.g. real assets, credit, equities, infrastructure) and region (e.g. Asia-Pacific, Global, Australia) from the job description
-- Do NOT rephrase or rewrite — only fill in the blanks and update dates
-- Return ONLY the numbered lines, nothing else"""}]
+- Use EXACTLY "{company}" for the company name — never modify or expand it
+- Use EXACTLY "{title}" for the role/position — never modify it
+- For region: be specific to this job (e.g. "Australian market" if the role is in Australia)
+- You have FULL CREATIVE FREEDOM to rewrite the ENTIRE sentence so it flows naturally and is specific to this role and asset class
+- Match terminology to the asset class: real estate/property → "assets", "properties", "real estate portfolio"; credit → "credit investments", "debt instruments"; infrastructure → "assets", "projects"; private equity → "portfolio companies"; equities → "companies", "equity portfolio"
+- NEVER use private equity language (e.g. "portfolio companies", "value creation alongside companies") for real estate, infrastructure, or credit roles
+- If the sentence ends awkwardly after filling the blank, rewrite the ending completely
+- Return ONLY the rewritten sentences, numbered the same way"""}]
     )
 
     response = message.content[0].text.strip()
-    print(f"  Claude output:\n{response}\n")
+    print(f"  Claude rewrites:\n{response}\n")
 
+    rewrites = {}
     for line in response.splitlines():
         m = re.match(r'^(\d+)\.\s*(.+)$', line.strip())
-        if not m:
-            continue
-        idx = int(m.group(1)) - 1
-        if not (0 <= idx < len(to_update)):
-            continue
-        _, para = to_update[idx]
-        new_text = m.group(2).strip()
+        if m:
+            rewrites[int(m.group(1)) - 1] = m.group(2).strip()
 
-        if para.text == new_text:
+    for j, (_, para, had_bold_blank) in enumerate(blank_paras):
+        new_text = rewrites.get(j, "")
+        if not new_text:
             continue
-
-        # Per-run pass: replace known patterns in each run individually
-        if not _replace_in_runs(para, para.text, new_text):
-            # Cross-run fallback: safe here because filtered paragraphs
-            # (date/blank lines) don't contain hyperlinks
-            if para.runs:
-                para.runs[0].text = new_text
-                for run in para.runs[1:]:
-                    run.text = ""
+        _set_para_text(para, new_text)
+        if title in new_text and para.runs:
+            _rebold_title(para, title)
 
     doc.save(path)
     print(f"  Cover letter saved: {path}")
