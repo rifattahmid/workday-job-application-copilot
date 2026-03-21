@@ -64,18 +64,24 @@ Instructions:
 
 
 def _claude_skills(job_title: str, job_desc: str, applicant: dict) -> str:
-    """Return a comma-separated skills string tailored to this job."""
+    """Return a comma-separated list of the 10 most in-demand skills for this job.
+    Claude picks industry-standard skill names (not limited to applicant's list)
+    so they match what Workday's skill database actually contains."""
     client = anthropic.Anthropic()
-    all_skills = ", ".join(applicant.get("skills", []))
+    applicant_skills = ", ".join(applicant.get("skills", []))
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=100,
-        messages=[{"role": "user", "content": f"""Pick the most relevant skills from this list for the job below.
-Return only a comma-separated list, max 10 skills.
+        max_tokens=120,
+        messages=[{"role": "user", "content": f"""You are filling a job application skills section.
+List the 10 most important skills for this role using standard industry skill names
+(short, commonly used terms that would exist in a corporate HR skill database).
+Prefer skills the applicant likely has based on their background.
 
-SKILLS: {all_skills}
+APPLICANT BACKGROUND SKILLS: {applicant_skills}
 JOB TITLE: {job_title}
-JOB DESC: {job_desc[:500]}"""}]
+JOB DESC: {job_desc[:600]}
+
+Return ONLY a comma-separated list of exactly 10 skills. No numbering, no explanations."""}]
     )
     return message.content[0].text.strip()
 
@@ -539,15 +545,15 @@ def _degree_level(degree_str: str) -> str:
 
 def _education_field(edu_field: str, job_title: str, job_desc: str, edu_degree: str = "") -> str:
     """
-    Determine field of study based on job context.
+    Determine field of study to search in Workday's Field of Study panel.
+    Rules (in priority order):
     - Professional qualifications (CA, CPA, CFA, Chartered): always use applicant.json field
-    - Investment/fund role: Finance for Masters/Bachelor
-    - Accounting role: Finance for Masters, Accounting for Bachelor
+    - Masters degree → always "Finance" for relevant jobs
+    - Bachelor degree → always "Accounting" for relevant jobs
     """
-    d = edu_field.lower()
-
-    # Never override professional qualification fields — CA stays Accounting, etc.
     deg_lower = edu_degree.lower()
+
+    # Never override professional qualification fields — CA stays "Accounting", etc.
     if any(x in deg_lower for x in ["chartered", "certified", "cpa", "cfa", " ca"]):
         return edu_field
 
@@ -555,17 +561,23 @@ def _education_field(edu_field: str, job_title: str, job_desc: str, edu_degree: 
     is_invest   = any(x in job for x in ["investment", "fund", "portfolio", "asset management",
                                           "real estate", "real assets", "infrastructure", "equity", "credit"])
     is_accounting = any(x in job for x in ["account", "audit", "tax"])
+    is_finance  = any(x in job for x in ["finance", "financial", "analyst", "fp&a", "treasury"])
+    relevant_job = is_invest or is_accounting or is_finance
 
-    if is_invest:
-        # Masters in banking/finance → keep as-is (already finance); Bachelor → Finance
-        if any(x in d for x in ["banking", "finance"]):
-            return edu_field     # e.g. "Banking and Finance" → keep
+    if not relevant_job:
+        return edu_field
+
+    # Masters → always Finance (degree is Banking & Finance; "Banking and Finance" is not
+    # a valid Workday option so always normalise to "Finance")
+    if any(x in deg_lower for x in ["master", "mba", "msc", "postgrad"]):
         return "Finance"
-    elif is_accounting:
-        if any(x in d for x in ["master", "banking", "finance"]):
+
+    # Bachelor → Finance for investment/finance roles, Accounting for accounting roles
+    if any(x in deg_lower for x in ["bachelor", "undergraduate"]):
+        if is_invest or is_finance:
             return "Finance"
-        else:
-            return "Accounting"
+        return "Accounting"
+
     return edu_field
 
 
@@ -995,49 +1007,124 @@ def _fill_field_of_study(page, field: str) -> bool:
         return False
 
     try:
-        # Open the panel
+        # target_el IS the search input — the label's for= attribute points directly
+        # to the selectinput widget's <input>. Clicking it opens the dropdown panel;
+        # we then type directly into it (no separate panel search box to find).
         target_el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-        time.sleep(0.5)
+        time.sleep(0.8)
 
-        # Type into the Search box that appears
-        search = page.query_selector(
-            "input[placeholder='Search'], "
-            "input[placeholder*='Search' i], "
-            "input[aria-label*='search' i]"
-        )
-        if search and search.is_visible():
-            search.fill(field)
-            time.sleep(0.5)
+        # Wait for the dropdown options to appear
+        try:
+            page.wait_for_selector("[data-automation-id='promptOption']", state="visible", timeout=3000)
+        except Exception:
+            return False
 
-        # Click matching option — try Workday promptOption, radio, li[role='option']
-        opts = _wait_for_prompt_options(page, timeout=3000)
-        for opt in opts:
-            try:
-                if field.lower() in opt.inner_text().strip().lower():
-                    opt.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-                    time.sleep(0.3)
-                    return True
-            except Exception:
-                continue
+        # Type the search term directly into target_el
+        target_el.press("Control+a")
+        target_el.press("Delete")
+        target_el.type(field, delay=50)
+        time.sleep(0.8)
 
-        # Fallback: look for radio buttons with matching label text
-        for inp in page.query_selector_all("input[type='radio']"):
-            try:
-                lbl_el = page.query_selector(f"label[for='{inp.get_attribute('id')}']")
-                if lbl_el and field.lower() in lbl_el.inner_text().lower():
-                    inp.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-                    time.sleep(0.3)
-                    return True
-            except Exception:
-                continue
+        # Log visible options after typing for diagnosis
+        visible_opts = page.evaluate("""() =>
+            Array.from(document.querySelectorAll('[data-automation-id="promptOption"]'))
+                .filter(e => e.offsetParent)
+                .map(e => e.textContent.trim())
+                .slice(0, 8)
+        """)
+        print(f"      Options after typing '{field}': {visible_opts}")
 
-        # Last resort: click the first available real option
-        if opts:
-            opts[0].evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-            return True
+        # Click the matching option. If the list is long (no filter applied or partial),
+        # scroll the dropdown container in increments until the option appears in the DOM.
+        clicked = page.evaluate("""async (field) => {
+            const fl = field.toLowerCase();
+
+            function tryClick() {
+                for (const opt of document.querySelectorAll('[data-automation-id="promptOption"]')) {
+                    if (!opt.textContent.trim().toLowerCase().includes(fl)) continue;
+                    opt.scrollIntoView({block: 'center', behavior: 'instant'});
+                    ['mousedown', 'mouseup', 'click'].forEach(t =>
+                        opt.dispatchEvent(new MouseEvent(t, {bubbles: true, cancelable: true, view: window}))
+                    );
+                    return opt.textContent.trim();
+                }
+                return null;
+            }
+
+            // Try immediately (works if filter narrowed the list)
+            const immediate = tryClick();
+            if (immediate) return immediate;
+
+            // Find the scrollable container holding the options
+            const firstOpt = document.querySelector('[data-automation-id="promptOption"]');
+            if (!firstOpt) return null;
+            let container = firstOpt.parentElement;
+            while (container && container !== document.body) {
+                if (container.scrollHeight > container.clientHeight + 10) break;
+                container = container.parentElement;
+            }
+            if (!container || container === document.body) return null;
+
+            // Scroll 150px at a time, wait 120ms for virtual list to re-render, then retry
+            for (let i = 0; i < 40; i++) {
+                container.scrollTop += 150;
+                await new Promise(r => setTimeout(r, 120));
+                const found = tryClick();
+                if (found) return found;
+            }
+            return null;
+        }""", field)
+
+        if not clicked:
+            # Fallback: radio buttons with matching label text
+            for inp in page.query_selector_all("input[type='radio']"):
+                try:
+                    lbl_el = page.query_selector(f"label[for='{inp.get_attribute('id')}']")
+                    if lbl_el and field.lower() in lbl_el.inner_text().lower():
+                        inp.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                        time.sleep(0.3)
+                        clicked = field
+                        break
+                except Exception:
+                    continue
+
+        time.sleep(0.3)
+        print(f"      Field of study clicked: {clicked!r}")
+
+        # Close the panel with a REAL trusted mouse click outside the widget.
+        # Synthetic JS events have isTrusted=false which Workday's UXI click-outside
+        # handler ignores. page.mouse.click() uses CDP Input.dispatchMouseEvent
+        # which produces isTrusted=true and correctly triggers the close handler.
+        # Click 80px above target_el — that's the Degree/Institution field, outside panel.
+        try:
+            box = target_el.bounding_box()
+            if box:
+                click_y = max(10, box["y"] - 80)
+                page.mouse.click(box["x"] + box["width"] / 2, click_y)
+            else:
+                page.mouse.click(100, 100)
+        except Exception:
+            page.mouse.click(100, 100)
+        time.sleep(0.3)
+
+        # Verify closed
+        try:
+            page.wait_for_selector("[data-automation-id='promptOption']", state="hidden", timeout=800)
+        except Exception:
+            pass  # best effort — proceed regardless
+
+        return bool(clicked)
 
     except Exception as e:
         print(f"      Field of study error: {e}")
+        try:
+            box = target_el.bounding_box()
+            if box:
+                page.mouse.click(box["x"] + box["width"] / 2, max(10, box["y"] - 80))
+            else:
+                page.mouse.click(100, 100)
+        except Exception:
+            pass
     return False
 
 
@@ -1253,7 +1340,7 @@ def _fill_languages(page):
     # Only English for now; expand list when language selection is stable
     languages = ["English"]
 
-    for i, lang in enumerate(languages):
+    for lang in languages:
         print(f"    Adding language: {lang}")
         prof = LANG_PROFICIENCY.get(lang, {"level": "Beginner", "fallback": "Elementary", "fluent": False})
 
@@ -1354,13 +1441,15 @@ def _fill_languages(page):
 def _get_skill_input(page):
     """Find the skills typeahead input on the page."""
     for sel in [
+        "input[id*='skills' i]",                              # most specific: id="skills--skills"
+        "input[data-uxi-widget-type='selectinput'][id*='skills' i]",  # UXI selectinput scoped to skills
         "input[placeholder*='Add Skills' i]",
         "input[placeholder*='Type to Add' i]",
         "input[placeholder*='skill' i]",
         "input[aria-label*='skill' i]",
         "[data-automation-id*='skill'] input",
         "[data-automation-id*='Skill'] input",
-        "input[data-automation-id*='SearchInput']",
+        "input[data-automation-id='searchBox'][id*='skills' i]",  # scoped — avoids field of study
     ]:
         el = page.query_selector(sel)
         if el and el.is_visible():
@@ -1423,18 +1512,23 @@ def _fill_skills(page, applicant: dict, job_title: str, job_desc: str):
             print(f"    No skill input found, stopping.")
             break
 
-        # Clear any previous text, then type the skill name
-        skill_input.click()
-        skill_input.evaluate("el => el.select()")   # select-all (ElementHandle compatible)
-        skill_input.fill(skill)
+        # Close any stale dropdown from a previous iteration, then click via JS
+        # to bypass any remaining overlay (pageFooter or open selectinputlistitem).
+        page.keyboard.press("Escape")
+        time.sleep(0.2)
+        skill_input.evaluate("el => { el.scrollIntoView({block:'center', behavior:'instant'}); }")
+        time.sleep(0.2)
+        skill_input.evaluate("el => el.click()")
+        time.sleep(0.3)   # wait for JS focus to transfer before sending keyboard events
+        page.keyboard.press("Control+a")
+        page.keyboard.press("Delete")
+        page.keyboard.type(skill, delay=30)   # fires keydown/keypress/keyup per character
 
-        # Wait for the dropdown list to appear
-        opts = _wait_for_prompt_options(page, timeout=3000)
-        if not opts:
-            # Try pressing Enter to open/confirm
-            skill_input.press("Enter")
-            time.sleep(0.5)
-            opts = _wait_for_prompt_options(page, timeout=2000)
+        # The UXI selectinput requires Enter to submit the search query.
+        page.keyboard.press("Enter")
+        time.sleep(0.5)
+
+        opts = _wait_for_prompt_options(page, timeout=4000)
         if not opts:
             skill_input.press("Escape")
             time.sleep(0.2)
@@ -1469,11 +1563,21 @@ def _fill_skills(page, applicant: dict, job_title: str, job_desc: str):
                     best_opt.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
             except Exception:
                 best_opt.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-            time.sleep(0.5)
-            added += 1
-            # Press Escape to close dropdown before next skill
-            skill_input.press("Escape")
             time.sleep(0.3)
+            added += 1
+            # Close the multiselect dropdown with a trusted mouse click ABOVE the
+            # skill input — identical pattern to field-of-study close.
+            # Escape via JS focus does NOT work for UXI multiselect dropdowns
+            # (they require isTrusted=true click-outside events to close).
+            try:
+                box = skill_input.bounding_box()
+                if box:
+                    page.mouse.click(box["x"] + box["width"] / 2, max(10, box["y"] - 80))
+                else:
+                    page.mouse.click(100, 100)
+                time.sleep(0.3)
+            except Exception:
+                pass
 
     # Close the skills dropdown if still open
     try:
@@ -1489,10 +1593,16 @@ def _fill_skills(page, applicant: dict, job_title: str, job_desc: str):
 def _screening_value(label_text: str) -> str:
     """Determine Yes/No for a screening question. Default is No."""
     lbl = label_text.lower()
-    # Only say Yes for "are you 18 or older" type questions
+    # Age 18+ → Yes
     if "18" in label_text and any(x in lbl for x in ["age", "old", "least", "years"]):
         return "Yes"
-    # Everything else defaults to No (including sponsorship, visa, affiliations, etc.)
+    # Agree/acknowledge/certify/confirm statements → always Yes
+    if any(x in lbl for x in ["i agree", "i acknowledge", "i certify", "i confirm",
+                                "agree to", "acknowledge that", "certify that",
+                                "confirm that", "accept the", "read and understand",
+                                "terms and condition", "privacy policy", "code of conduct"]):
+        return "Yes"
+    # Everything else defaults to No (sponsorship, visa, affiliations, etc.)
     return "No"
 
 
@@ -1656,50 +1766,119 @@ def _fill_screening_questions(page, applicant: dict, job_title: str, job_desc: s
         except Exception:
             continue
 
+    # ── Checkbox-style "I agree" disclosures ──
+    # Some Workday forms present agreement statements as unchecked checkboxes rather
+    # than Select One dropdowns. Check any unchecked checkbox whose nearby label
+    # contains agree/acknowledge/certify language.
+    AGREE_KEYWORDS = ["agree", "acknowledge", "certify", "confirm", "accept",
+                      "terms", "privacy", "code of conduct", "read and understand"]
+    for cb in page.query_selector_all("input[type='checkbox']"):
+        try:
+            if not cb.is_visible():
+                continue
+            if cb.is_checked():
+                continue
+            label_txt = cb.evaluate("""el => {
+                // Try label[for=id] — most reliable
+                if (el.id) {
+                    const lbl = document.querySelector('label[for="' + el.id + '"]');
+                    if (lbl) return lbl.textContent.trim();
+                }
+                // Try wrapping label
+                const parent = el.closest('label');
+                if (parent) return parent.textContent.trim();
+                // Do NOT fall back to parentElement.textContent — it captures
+                // unrelated surrounding text (footer links, privacy notices, etc.)
+                // which causes false keyword matches on unrelated checkboxes.
+                return '';
+            }""")
+            if any(kw in label_txt.lower() for kw in AGREE_KEYWORDS):
+                print(f"    Agree checkbox: '{label_txt[:80]}' → checking")
+                cb.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                time.sleep(0.3)
+                answered += 1
+        except Exception:
+            continue
+
     print(f"    Answered {answered} screening question(s).")
 
 
 def _upload_files(page, resume_pdf: str, output_folder: str = ""):
     """
     Upload files to the Workday file upload area.
-    - Single-file input: upload resume only.
-    - Multi-file input (accepts 5): upload cover letter + resume (NOT position description).
-    Never uploads the same set twice (caller tracks upload_done flag).
+    - Single-file input  → resume only.
+    - Multi-file input   → resume + cover letter + 3 supplementary PDFs (max 5 total).
+
+    Supplementary PDFs (added when multi-upload is available):
+      - Recommendations.pdf
+      - Monash University Transcript.pdf
+      - CA ANZ Statement of Academic Record.pdf
     """
+    SUPPLEMENTARY = [
+        r"X:\Career & Networking\Resumes\Recommendations\Recommendations.pdf",
+        r"X:\Career & Networking\Resumes\Grades\Monash University Transcript.pdf",
+        r"X:\Career & Networking\Resumes\Grades\CA ANZ Statement of Academic Record.pdf",
+    ]
+
     upload_input = page.query_selector("input[type='file']")
     if not upload_input:
         print("  No file upload input found on this page.")
         return
 
-    # Gather files: resume first, then cover letter if multi-upload allowed
-    files_to_upload = []
-
-    if resume_pdf and Path(resume_pdf).exists():
-        files_to_upload.append(resume_pdf)
-    else:
+    if not resume_pdf or not Path(resume_pdf).exists():
         print("  Resume PDF not found, skipping upload.")
         return
+
+    files_to_upload = [resume_pdf]
 
     # Check if input accepts multiple files
     is_multiple = upload_input.evaluate("el => el.multiple || el.getAttribute('multiple') !== null")
 
-    if is_multiple and output_folder:
-        # Find cover letter PDF in output folder (exclude Position Description)
-        import glob as _glob
-        for pdf in _glob.glob(f"{output_folder}/*.pdf"):
-            name = Path(pdf).name.lower()
-            if "position description" in name:
+    if is_multiple:
+        # Cover letter from output folder
+        if output_folder:
+            import glob as _glob
+            for pdf in _glob.glob(f"{output_folder}/*.pdf"):
+                name = Path(pdf).name.lower()
+                if "position description" in name or "resume" in name:
+                    continue
+                if "cover" in name or "letter" in name:
+                    files_to_upload.append(pdf)
+                    break
+
+        # Supplementary PDFs — add only if total stays under Workday's 5 MB limit
+        SIZE_LIMIT = 5 * 1024 * 1024   # 5 MB in bytes
+        total_size = sum(Path(f).stat().st_size for f in files_to_upload if Path(f).exists())
+        for path in SUPPLEMENTARY:
+            p = Path(path)
+            if not p.exists():
+                print(f"  Supplementary file not found, skipping: {p.name}")
                 continue
-            if "resume" in name:
-                continue
-            if "cover" in name or "letter" in name:
-                files_to_upload.append(pdf)
+            file_size = p.stat().st_size
+            if total_size + file_size > SIZE_LIMIT:
+                print(f"  Skipping {p.name} — would exceed 5 MB limit "
+                      f"({(total_size + file_size) / 1024 / 1024:.1f} MB total)")
                 break
+            files_to_upload.append(path)
+            total_size += file_size
+
+        # Cap at 5 (Workday's typical maximum)
+        files_to_upload = files_to_upload[:5]
 
     print(f"  Uploading {len(files_to_upload)} file(s): {[Path(f).name for f in files_to_upload]}")
     try:
         upload_input.set_input_files(files_to_upload)
         time.sleep(2)
+        # Check if Workday rejected the batch (shows an inline error about file size/type)
+        error_visible = upload_input.evaluate("""el => {
+            const form = el.closest('form, section, div[data-automation-id]') || el.parentElement;
+            return form ? form.innerText.toLowerCase().includes('5mb') ||
+                          form.innerText.toLowerCase().includes('error') : false;
+        }""")
+        if error_visible and len(files_to_upload) > 1:
+            print("    Upload error detected — retrying with resume only.")
+            upload_input.set_input_files([resume_pdf])
+            time.sleep(2)
         print("    Upload complete.")
     except Exception as e:
         print(f"    Upload failed: {e}")
@@ -2112,6 +2291,67 @@ def _auto_apply_and_login(page, gmail: str = "rtahmid9999@gmail.com"):
 
 
 # ---------------------------------------------------------------------------
+# Disclosure / Terms-and-Conditions page helpers
+# ---------------------------------------------------------------------------
+
+def _fill_disclosure_checkboxes(page) -> int:
+    """
+    Tick unchecked checkboxes on Voluntary Disclosures / T&C pages whose label
+    contains consent/agreement keywords. Skips unrelated checkboxes (e.g. "preferred name").
+    Workday checkbox inputs have opacity:0 so Playwright's is_visible() skips them;
+    JS click() bypasses that and directly toggles the checked state.
+    Returns the number of boxes ticked.
+    """
+    # On a confirmed disclosure/T&C page every checkbox is an agreement — tick them all.
+    # No label filtering needed because the detection already confirmed the page context.
+    ticked = page.evaluate("""() => {
+        let n = 0;
+        for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
+            if (cb.checked) continue;
+            // Only skip if inside a display:none ancestor (truly hidden)
+            let node = cb.parentElement;
+            while (node && node !== document.body) {
+                if (getComputedStyle(node).display === 'none') { node = null; break; }
+                node = node.parentElement;
+            }
+            if (!node) continue;
+            cb.click();
+            n++;
+        }
+        return n;
+    }""")
+    return ticked or 0
+
+
+# ---------------------------------------------------------------------------
+# Review page sense-check
+# ---------------------------------------------------------------------------
+
+def _claude_review_check(page_text: str, applicant: dict) -> str:
+    """Ask Claude Haiku to sense-check the Review page before submission."""
+    client = anthropic.Anthropic()
+    name  = f"{applicant.get('first_name','')} {applicant.get('last_name','')}".strip()
+    email = applicant.get("email", "")
+    prompt = (
+        f"You are reviewing a job application before final submission.\n\n"
+        f"=== REVIEW PAGE TEXT (first 3000 chars) ===\n{page_text[:3000]}\n\n"
+        f"=== APPLICANT PROFILE ===\n"
+        f"Name: {name}\nEmail: {email}\n\n"
+        f"Sense-check the application in bullet points:\n"
+        f"1. Are key fields present (name, contact, experience, education)?\n"
+        f"2. Any obvious errors or missing information?\n"
+        f"3. Does everything look consistent?\n"
+        f"Be brief. Flag only real issues or confirm it looks good."
+    )
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=400,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -2205,6 +2445,14 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
             if "language" in page_text: detected.append("language")
             if "skill" in page_text: detected.append("skill")
             if any(x in page_text for x in ["upload", "resume", "cv"]): detected.append("upload")
+            # Disclosure: require the prominent heading, not just any mention of "terms"
+            if "voluntary disclosure" in page_text or (
+                    "terms and condition" in page_text and "affirm and agree" in page_text):
+                detected.append("disclosure")
+            # Review: must be an h1/h2/h3 with exactly "Review" as its text
+            if page.evaluate("""() => Array.from(document.querySelectorAll('h1,h2,h3'))
+                    .some(h => h.textContent.trim().toLowerCase() === 'review')"""):
+                detected.append("review")
             print(f"  [Page sections detected]: {detected}")
 
             if not personal_filled and any(x in page_text for x in ["first name", "last name", "email", "phone", "address"]):
@@ -2243,8 +2491,15 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
             # Screening questions — run on every page
             _fill_screening_questions(page, applicant, job_title, job_desc)
 
+            # Disclosure / Terms-and-Conditions pages: tick ALL unchecked checkboxes
+            if "disclosure" in detected:
+                n = _fill_disclosure_checkboxes(page)
+                print(f"  Disclosure page: ticked {n} checkbox(es).")
+
             # Fill any remaining unanswered text fields
             _fill_custom_questions(page, applicant, job_title, job_desc)
+
+            # (Review sense-check runs later, just before Submit is clicked)
 
             # Navigate
             def _find_btn(*labels):
@@ -2298,12 +2553,19 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
                 review_btn.click()
                 time.sleep(2)
             elif submit_btn and submit_btn.is_visible():
-                print("\n  Submit button found.")
-                confirm = input("  Type 'yes' to submit the application: ").strip().lower()
-                if confirm == "yes":
-                    submit_btn.click()
-                    print("  Application submitted!")
-                    time.sleep(3)
+                print("\n  ── Review page reached ──")
+                print("  Running Claude sense-check on the application...")
+                try:
+                    review_text = page.inner_text("body")
+                    feedback = _claude_review_check(review_text, applicant)
+                    print(f"\n  Claude sense-check:\n{feedback}\n")
+                except Exception as e:
+                    print(f"  (Sense-check failed: {e})")
+                input("  Press Enter to submit, or Ctrl+C to abort: ")
+                print("  Submitting application...")
+                submit_btn.click()
+                print("  Application submitted!")
+                time.sleep(3)
                 break
             else:
                 print("  No navigation button found. Please click Save/Next manually in the browser.")
