@@ -25,9 +25,16 @@ def _set_para_text(para, text):
 
 
 def classify_job(title, description):
-    """Match job to a template subfolder. Reads available folders dynamically."""
-    text = (title + " " + description).lower()
-    available = [
+    """Match job to a template subfolder. Reads available folders dynamically.
+
+    Scoring:
+    - Title keyword match  → +3  (title signals intent; weighted 3x over body text)
+    - Description keyword  → +1
+    Tie-break order: finance > investment > accounting.
+    """
+    title_text = title.lower()
+    desc_text  = description.lower()
+    available  = [
         f for f in os.listdir(TEMPLATE_BASE)
         if os.path.isdir(os.path.join(TEMPLATE_BASE, f))
     ]
@@ -35,27 +42,36 @@ def classify_job(title, description):
     # Keyword map — extend as new folders are added
     keywords = {
         "investment": ["investment", "investor", "portfolio", "asset management",
-                       "acquisition", "fund", "equity", "credit", "real estate",
-                       "real assets", "infrastructure", "capital markets"],
+                       "acquisition", "acquisitions", "mergers", "m&a",
+                       "transaction", "deals", "fund", "equity", "credit",
+                       "real estate", "real assets", "infrastructure", "capital markets"],
         "accounting": ["account", "audit", "tax", "bookkeep", "controller",
                        "cpa", "chartered accountant"],
         "finance":    ["finance", "financial", "fp&a", "treasury", "budget",
-                       "forecast", "analyst"],
+                       "forecast", "analyst", "corporate finance", "m&a",
+                       "mergers", "acquisitions", "transaction", "deals", "valuation"],
     }
+
+    TITLE_MULTIPLIER = 3
 
     scores = {folder: 0 for folder in available}
     for folder in available:
         for kw in keywords.get(folder, []):
-            if kw in text:
+            if kw in title_text:
+                scores[folder] += TITLE_MULTIPLIER
+            if kw in desc_text:
                 scores[folder] += 1
 
     best = max(scores, key=lambda f: scores[f]) if scores else available[0]
-    # Tie-break: prefer more specific folders over "finance"
-    if all(v == scores[best] for v in scores.values()):
-        for preferred in ("investment", "accounting"):
-            if preferred in available:
+
+    # Tie-break: if two or more categories share the top score, prefer finance > investment > accounting
+    top_score = scores[best]
+    if sum(1 for v in scores.values() if v == top_score) > 1:
+        for preferred in ("finance", "investment", "accounting"):
+            if preferred in available and scores.get(preferred, -1) == top_score:
                 best = preferred
                 break
+
     print(f"  Job classified as: {best}  (scores: {scores})")
     return best
 
