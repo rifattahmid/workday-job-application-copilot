@@ -82,8 +82,13 @@ def _is_required(el) -> bool:
         return False
 
 
-def _fill_by_label(page, label_text: str, value: str, ask_if_missing: bool = False) -> bool:
-    """Find an input by its nearby label text and fill it (first match)."""
+def _fill_by_label(page, label_text: str, value: str, ask_if_missing: bool = False,
+                   exclude: str = "") -> bool:
+    """Find an input by its nearby label text and fill it (first match).
+
+    exclude: if set, skip any label whose text contains this string (case-insensitive).
+             Used to avoid filling e.g. 'Preferred First Name' when searching 'First Name'.
+    """
     if not value:
         return False
     try:
@@ -93,7 +98,10 @@ def _fill_by_label(page, label_text: str, value: str, ask_if_missing: bool = Fal
         if not el:
             labels = page.query_selector_all("label")
             for lbl in labels:
-                if label_text.lower() in lbl.inner_text().lower():
+                lbl_txt = lbl.inner_text().lower()
+                if exclude and exclude.lower() in lbl_txt:
+                    continue
+                if label_text.lower() in lbl_txt:
                     for_id = lbl.get_attribute("for")
                     if for_id:
                         el = page.query_selector(f"#{for_id}")
@@ -1432,7 +1440,8 @@ def _fill_state(page, state: str, state_abbr: str):
         () => {
             for (const lbl of document.querySelectorAll('label')) {
                 const txt = lbl.textContent.trim().toLowerCase();
-                if (!txt.includes('state') && !txt.includes('territory')) continue;
+                if (!txt.includes('state') && !txt.includes('territory') &&
+                    !txt.includes('region') && !txt.includes('province')) continue;
                 const forId = lbl.getAttribute('for');
                 if (!forId) continue;
                 const el = document.getElementById(forId);
@@ -1485,7 +1494,7 @@ def _fill_state(page, state: str, state_abbr: str):
                 continue
             lbl = (btn.get_attribute("aria-label") or "").lower()
             txt = btn.inner_text().strip().lower()
-            if not any(x in lbl or x in txt for x in ["state", "territory"]):
+            if not any(x in lbl or x in txt for x in ["state", "territory", "region", "province"]):
                 continue
             print(f"      Candidate btn: aria-label='{lbl}' text='{txt}'")
             btn.scroll_into_view_if_needed()
@@ -1519,11 +1528,40 @@ def _fill_personal_info(page, applicant: dict, job_title: str, job_desc: str):
     print("  Filling personal information...")
     a = applicant
 
-    # Name
+    # Name — exclude="preferred" prevents filling "Preferred First/Last Name" fields
     _safe_fill(page, "input[data-automation-id='legalNameSection_firstName']", a["first_name"])
     _safe_fill(page, "input[data-automation-id='legalNameSection_lastName']", a["last_name"])
-    _fill_by_label(page, "First Name", a["first_name"])
-    _fill_by_label(page, "Last Name", a["last_name"])
+    _fill_by_label(page, "First Name", a["first_name"], exclude="preferred")
+    _fill_by_label(page, "Last Name",  a["last_name"],  exclude="preferred")
+
+    # Salutation / Title dropdown
+    salutation = a.get("salutation", "Mr.")
+    salutation_fallbacks = ["Mr", "Mr.", "Sir"]
+    salutation_filled = False
+    for sel in [
+        "[data-automation-id='salutation'] button",
+        "[data-automation-id='title'] button",
+        "[data-automation-id='nameTitle'] button",
+        "[data-automation-id='legalNameSection_salutation'] button",
+    ]:
+        btn = page.query_selector(sel)
+        if btn and btn.is_visible():
+            _workday_dropdown(page, btn, salutation, fallbacks=salutation_fallbacks)
+            salutation_filled = True
+            break
+    if not salutation_filled:
+        # Label-based fallback
+        for lbl in page.query_selector_all("label"):
+            lbl_txt = lbl.inner_text().strip().lower()
+            if lbl_txt not in ("salutation", "title", "prefix", "name prefix"):
+                continue
+            for_id = lbl.get_attribute("for")
+            if not for_id:
+                continue
+            el = page.query_selector(f"#{for_id}")
+            if el and el.is_visible():
+                _workday_dropdown(page, el, salutation, fallbacks=salutation_fallbacks)
+                break
 
     # Email
     _safe_fill(page, "input[data-automation-id='email']", a["email"])
@@ -1533,14 +1571,32 @@ def _fill_personal_info(page, applicant: dict, job_title: str, job_desc: str):
     phone_val = a["phone"]
 
     # Phone Device Type — button dropdown, pick "Mobile"
+    phone_type_filled = False
     for sel in [
         "[data-automation-id='phone-device-type'] button",
         "[data-automation-id='phoneDeviceType'] button",
+        "[data-automation-id='deviceType'] button",
+        "[data-automation-id='phone_device_type'] button",
+        "[data-automation-id='phoneType'] button",
     ]:
         btn = page.query_selector(sel)
         if btn and btn.is_visible():
-            _workday_dropdown(page, btn, "Mobile")
+            _workday_dropdown(page, btn, "Mobile", fallbacks=["Cell", "Other"])
+            phone_type_filled = True
             break
+    if not phone_type_filled:
+        # Label-based fallback
+        for lbl in page.query_selector_all("label"):
+            lbl_txt = lbl.inner_text().strip().lower()
+            if not any(x in lbl_txt for x in ["device type", "phone type", "phone device"]):
+                continue
+            for_id = lbl.get_attribute("for")
+            if not for_id:
+                continue
+            el = page.query_selector(f"#{for_id}")
+            if el and el.is_visible():
+                _workday_dropdown(page, el, "Mobile", fallbacks=["Cell", "Other"])
+                break
 
     # Country Phone Code
     try:
@@ -2431,7 +2487,49 @@ def _fill_screening_questions(page, applicant: dict, job_title: str, job_desc: s
             opts = _wait_for_prompt_options(page, timeout=4000)
             print(f"      Found {len(opts)} option(s): {[o.inner_text().strip() for o in opts[:5]]}")
 
-            # Build list of acceptable values for this answer
+            # ── Referral / "How Did You Hear About Us?" detection ──
+            # If the label or options indicate a referral-source field, route to
+            # referral logic instead of Yes/No matching.
+            REFERRAL_LABEL_SIGNALS = [
+                "hear about", "how did you find", "referral source",
+                "how were you referred", "source of hire", "how did you hear",
+            ]
+            REFERRAL_OPTION_SIGNALS = {
+                "corporate website", "job board", "linkedin", "indeed",
+                "employee", "referral", "recruitment", "agency", "online",
+                "internet", "newspaper", "social media", "glassdoor", "seek",
+            }
+            opt_texts_lower = {o.inner_text().strip().lower() for o in opts}
+            is_referral = (
+                any(sig in clean_label.lower() for sig in REFERRAL_LABEL_SIGNALS)
+                or len(opt_texts_lower & REFERRAL_OPTION_SIGNALS) >= 2
+            )
+
+            if is_referral:
+                preferred = applicant.get("referral_source", "LinkedIn")
+                REFERRAL_FALLBACKS = ["Job Board", "LinkedIn", "Indeed", "Online", "Other"]
+                matched = False
+                for search in [preferred] + REFERRAL_FALLBACKS:
+                    for opt in opts:
+                        try:
+                            if search.lower() in opt.inner_text().strip().lower():
+                                opt.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                                time.sleep(0.5)
+                                answered += 1
+                                matched = True
+                                break
+                        except Exception:
+                            continue
+                    if matched:
+                        break
+                if not matched and opts:
+                    # Last resort: pick first option
+                    opts[0].evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                    time.sleep(0.5)
+                    answered += 1
+                continue  # next Select One button
+
+            # ── Standard Yes/No dropdown ──
             # Handles Yes/No AND True/False option styles
             YES_SYNONYMS = {"yes", "true", "agree", "i agree"}
             NO_SYNONYMS  = {"no", "false", "disagree", "i disagree"}
@@ -2486,8 +2584,6 @@ def _fill_screening_questions(page, applicant: dict, job_title: str, job_desc: s
                 print(f"      Could not select '{value}' — pressing Escape")
                 page.keyboard.press("Escape")
                 time.sleep(0.3)
-                # Safety: if still showing "Select One", skip by temporarily marking
-                # (shouldn't happen often — break to avoid infinite loop)
                 break
         except Exception as e:
             print(f"      Screening error: {e}")
