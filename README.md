@@ -27,8 +27,8 @@ An end-to-end automation tool that takes a Workday job URL and handles everythin
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/dmtalien/workday-application-copilot.git
-cd workday-application-copilot
+git clone https://github.com/rifattahmid/workday-job-application-copilot.git
+cd workday-job-application-copilot
 ```
 
 ### 2. Create and activate a virtual environment

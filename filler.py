@@ -366,8 +366,10 @@ def _type_date(page, el, value: str):
         # Scroll & JS-click to focus without triggering Playwright's viewport check
         el.evaluate("el => { el.scrollIntoView({block:'center', behavior:'instant'}); el.click(); }")
         time.sleep(0.2)
-        # Select-all to clear any existing value
-        el.evaluate("el => el.select()")
+        # Ctrl+A then Delete to clear — more reliable than el.select() on React masked inputs
+        page.keyboard.press("Control+a")
+        time.sleep(0.05)
+        page.keyboard.press("Delete")
         time.sleep(0.1)
         # Type just the digits — the masked field handles the "/" separator
         page.keyboard.type(digits, delay=30)
@@ -966,7 +968,17 @@ def _fill_work_experience(page, applicant: dict):
             }""")
             time.sleep(0.5)  # let To field hide before filling dates
 
-        # Dates — positional helper picks the last pair of MM/YYYY inputs on the page
+        # Dates — wait explicitly for the date input to render after other fields are filled
+        date_appeared = False
+        for ph in ["MM/YYYY", "MM / YYYY", "mm/yyyy", "Month/Year"]:
+            try:
+                page.wait_for_selector(f"input[placeholder='{ph}']", state="visible", timeout=5000)
+                date_appeared = True
+                break
+            except Exception:
+                pass
+        if not date_appeared:
+            time.sleep(2.0)  # last-resort extra wait
         if not _fill_exp_dates(page, exp["start"], exp["end"], is_current):
             print(f"      Warning: MM/YYYY date inputs not found for '{exp['title']}'")
 
@@ -2086,10 +2098,141 @@ def _handle_apply_popup(page):
     return None
 
 
+_APPLICATION_FORM_SIGNALS = [
+    "first name", "last name", "work experience", "employment history",
+    "education", "upload", "resume", "screening", "my experience",
+    "contact information", "legal name", "phone number",
+]
+
+
+def _is_on_signin_page(page) -> bool:
+    """Return True if the page is a Workday login / sign-in page (not an application form)."""
+    try:
+        url = page.url.lower()
+        if "login" in url or "signin" in url:
+            return True
+        # Visible email + exactly one visible password field = sign-in form
+        pw_inputs    = [e for e in page.query_selector_all("input[type='password']") if e.is_visible()]
+        email_inputs = [e for e in page.query_selector_all(
+            "input[type='email'], input[name='email'], input[name='username']"
+        ) if e.is_visible()]
+        return len(pw_inputs) == 1 and len(email_inputs) >= 1
+    except Exception:
+        return False
+
+
+def _is_on_application_form(page) -> bool:
+    """Return True if the current page looks like a Workday application form."""
+    try:
+        if _is_on_signin_page(page):
+            return False
+        text = page.inner_text("body").lower()
+        return sum(1 for k in _APPLICATION_FORM_SIGNALS if k in text) >= 2
+    except Exception:
+        return False
+
+
+def _click_signin_button(page) -> bool:
+    """Click the Sign In / Log In submit button. Returns True if clicked."""
+    SIGNIN_KEYWORDS = ["sign in", "log in", "login", "signin"]
+    for el in page.query_selector_all("button, input[type='submit'], [role='button'], a"):
+        try:
+            if not el.is_visible():
+                continue
+            txt  = (el.inner_text() or el.get_attribute("value") or "").strip().lower()
+            aria = (el.get_attribute("aria-label") or "").strip().lower()
+            aid  = (el.get_attribute("data-automation-id") or "").lower()
+            label = txt or aria or aid
+            if any(k in label for k in SIGNIN_KEYWORDS) and "create" not in label:
+                el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                print(f"  Clicked sign-in button: '{label}'")
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _auto_fill_signin(page, email: str, password: str) -> bool:
+    """Fill email + password into a sign-in form and click submit. Returns True if submitted."""
+    for sel in [
+        "input[type='email']", "input[name='email']", "input[name='username']",
+        "input[autocomplete='email']", "input[autocomplete='username']",
+        "input[id*='email' i]", "input[id*='user' i]",
+    ]:
+        el = page.query_selector(sel)
+        if el and el.is_visible():
+            el.click()
+            time.sleep(0.2)
+            el.fill(email)
+            print(f"  Auto sign-in: filled email '{email}'")
+            break
+
+    pw_inputs = [el for el in page.query_selector_all("input[type='password']") if el.is_visible()]
+    if not pw_inputs:
+        print("  Auto sign-in: no password field found.")
+        return False
+    pw_inputs[0].click()
+    time.sleep(0.2)
+    pw_inputs[0].fill(password)
+    print("  Auto sign-in: filled password.")
+    time.sleep(0.3)
+    return _click_signin_button(page)
+
+
+def _wait_for_form_or_auto_signin(page, email: str, password: str | None, timeout: int = 45) -> None:
+    """
+    Poll the page after login/registration until:
+    - Application form detected → return immediately (no user prompt)
+    - Sign-in page detected + password available → auto sign in and keep polling
+    - Timeout → fall back to manual user prompt
+    """
+    print("  Watching for application form or sign-in redirect (auto mode)...")
+    deadline = time.time() + timeout
+    signin_attempted = False
+
+    while time.time() < deadline:
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=3000)
+        except Exception:
+            pass
+
+        # Check sign-in FIRST — prevents false-positive form detection on login pages
+        if _is_on_signin_page(page):
+            if password and not signin_attempted:
+                # Silently wait until the password field actually renders before attempting
+                pw_visible = [e for e in page.query_selector_all("input[type='password']") if e.is_visible()]
+                if not pw_visible:
+                    time.sleep(1.0)
+                    continue  # form still loading — don't spam messages
+                print("  Sign-in page detected — auto signing in with stored credentials...")
+                if _auto_fill_signin(page, email, password):
+                    signin_attempted = True
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=12000)
+                    except Exception:
+                        pass
+                    time.sleep(2.0)
+                    signin_attempted = False  # allow retry if redirected to sign-in again
+            time.sleep(1.0)
+            continue
+
+        if _is_on_application_form(page):
+            print("  Application form detected — proceeding automatically.")
+            return
+
+        time.sleep(1.0)
+
+    # Timeout fallback
+    if not _is_on_application_form(page):
+        print("  Could not auto-detect form or sign in within timeout.")
+        input("  Please complete sign-in and reach the first form page, then press Enter: ")
+
+
 def _handle_gmail_login(page, gmail: str):
     """
     Detect sign-in page → click Google → fill email → click Next → wait for password.
     Waits for the actual Workday sign-in FORM to render (not just nav links).
+    Returns the password entered during registration (or None).
     """
     print(f"  [Login check] URL: {page.url}")
 
@@ -2220,19 +2363,142 @@ def _handle_gmail_login(page, gmail: str):
 
         print("\n  Please enter your password (and complete any 2-factor) in the browser.")
         input("  Press Enter once you are fully signed in: ")
+        # After Google sign-in, auto-detect form vs any further redirect
+        _wait_for_form_or_auto_signin(page, gmail, None)
+        return None
 
     else:
-        # No Google button — try direct Workday username/email field
-        email_inp = page.query_selector(
-            "input[type='email'], input[name='username'], input[autocomplete='username'], "
-            "input[name='email'], input[id*='email' i], input[id*='user' i]"
-        )
-        if email_inp and email_inp.is_visible():
+        # No Google button found — this may be a manual account registration page.
+        print("  No Google sign-in button found — checking for manual registration form...")
+
+        # Fill email field
+        email_inp = None
+        for sel in [
+            "input[type='email']",
+            "input[name='email']",
+            "input[name='username']",
+            "input[autocomplete='email']",
+            "input[autocomplete='username']",
+            "input[id*='email' i]",
+            "input[id*='user' i]",
+        ]:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                email_inp = el
+                break
+
+        if email_inp:
             email_inp.click()
+            time.sleep(0.2)
             email_inp.fill(gmail)
             print(f"  Filled email field: {gmail}")
-        print("  Please complete sign-in in the browser (password, 2FA, etc.).")
-        input("  Press Enter once you are fully signed in: ")
+        else:
+            print("  Could not find email field.")
+
+        # Check for password fields — if there are two, it's a registration form
+        pw_inputs = [
+            el for el in page.query_selector_all(
+                "input[type='password']"
+            )
+            if el.is_visible()
+        ]
+
+        if len(pw_inputs) >= 2:
+            # Registration form: new password + confirm password
+            print("  Found two password fields — this looks like a new account registration page.")
+            password = input("  Enter the password you want to create for this account: ").strip()
+
+            for pw_inp in pw_inputs[:2]:
+                pw_inp.click()
+                time.sleep(0.2)
+                pw_inp.fill(password)
+                time.sleep(0.2)
+            print("  Filled new password and confirm password fields.")
+
+            # Click the create account / register button
+            # First try Workday automation-id patterns
+            register_clicked = False
+            WORKDAY_CREATE_SELS = [
+                "[data-automation-id='createAccountButton']",
+                "[data-automation-id='createAccount']",
+                "[data-automation-id='registerButton']",
+                "[data-automation-id='register']",
+                "[data-automation-id='signUp']",
+                "[data-automation-id='submitButton']",
+                "[data-automation-id='submit']",
+                # Workday sometimes uses click_filter for the Create Account div-button
+                "[aria-label='Create Account'][role='button']",
+                "[data-automation-id='click_filter'][aria-label='Create Account']",
+            ]
+            for sel in WORKDAY_CREATE_SELS:
+                try:
+                    el = page.query_selector(sel)
+                    if el and el.is_visible():
+                        el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                        register_clicked = True
+                        print(f"  Clicked register/create button via automation-id: {sel}")
+                        break
+                except Exception:
+                    continue
+
+            # Fallback: scan all clickable elements by text
+            if not register_clicked:
+                CREATE_KEYWORDS = [
+                    "create account", "create an account", "register", "sign up",
+                    "create", "submit", "get started", "continue",
+                ]
+                candidates = []
+                for el in page.query_selector_all("button, input[type='submit'], [role='button'], a"):
+                    try:
+                        if not el.is_visible():
+                            continue
+                        txt = (el.inner_text() or el.get_attribute("value") or "").strip().lower()
+                        aid = (el.get_attribute("data-automation-id") or "").lower()
+                        aria = (el.get_attribute("aria-label") or "").strip().lower()
+                        label = txt or aria or aid
+                        candidates.append(f"'{label}'")
+                        if any(k in txt or k in aid or k in aria for k in CREATE_KEYWORDS):
+                            el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                            register_clicked = True
+                            print(f"  Clicked register/create button: '{label}'")
+                            break
+                    except Exception:
+                        continue
+                if not register_clicked:
+                    print(f"  Could not find a create/register button.")
+                    print(f"  Visible buttons found: {', '.join(candidates[:15]) or 'none'}")
+                    input("  Please click the create/register button manually, then press Enter: ")
+
+            # Whether clicked via automation-id or text-scan fallback, handle the redirect
+            if register_clicked:
+                print("  Account creation submitted — watching for redirect...")
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+                time.sleep(2.0)
+                _wait_for_form_or_auto_signin(page, gmail, password)
+                return password
+
+        elif len(pw_inputs) == 1:
+            # Single password field — sign-in to existing account.
+            print("  Found sign-in form (single password field).")
+            password = input("  Enter your Workday account password to auto sign in: ").strip()
+            if password:
+                _auto_fill_signin(page, gmail, password)
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=12000)
+                except Exception:
+                    pass
+                time.sleep(2.0)
+                _wait_for_form_or_auto_signin(page, gmail, password)
+                return password
+            else:
+                input("  Press Enter once you are fully signed in: ")
+
+        else:
+            print("  No password fields found — please complete sign-in manually.")
+            input("  Press Enter once you are fully signed in: ")
 
 
 def _auto_apply_and_login(page, gmail: str = "rtahmid9999@gmail.com"):
@@ -2283,11 +2549,13 @@ def _auto_apply_and_login(page, gmail: str = "rtahmid9999@gmail.com"):
     time.sleep(1.0)
 
     # --- Step 2: Try Gmail login ---
-    _handle_gmail_login(page, gmail)
+    captured_password = _handle_gmail_login(page, gmail)
 
-    # --- Step 3: Wait for first form page ---
-    print("\n  Waiting for the first application form page to load...")
-    input("  Press Enter once you are on the first page of the application form: ")
+    # --- Step 3: Auto-detect form or handle any remaining sign-in redirect ---
+    # If _handle_gmail_login already resolved to the form, this is a no-op.
+    # If we're still on a sign-in page (e.g. Google flow landed here), auto-sign-in.
+    if not _is_on_application_form(page):
+        _wait_for_form_or_auto_signin(page, gmail, captured_password)
 
 
 # ---------------------------------------------------------------------------
@@ -2432,8 +2700,8 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
                 ])
             )
             if on_login_page:
-                print("\n  Still on the login/sign-in page — waiting for you to complete sign-in.")
-                input("  Press Enter once you are on the first page of the application form: ")
+                print("\n  Still on the login/sign-in page — attempting auto sign-in...")
+                _wait_for_form_or_auto_signin(page, "rtahmid9999@gmail.com", None)
                 _wait_for_page_ready(page, timeout=10000)
                 page_text = page.inner_text("body").lower()
 
