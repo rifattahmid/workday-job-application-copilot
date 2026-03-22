@@ -62,9 +62,35 @@ ANTHROPIC_API_KEY=your_api_key_here
 
 ## Configuration
 
-### Applicant profile — `applicant.json`
+There are two files to personalise before running: `config.py` and `applicant.json`.
 
-This file holds all your personal information used to fill the Workday form. Edit it with your own details before running.
+---
+
+### Step 1 — `config.py` (settings & paths)
+
+Open `config.py` and update every value marked with `← UPDATE THIS`:
+
+| Setting | What it is |
+|---------|-----------|
+| `WORKDAY_EMAIL` | The email you use (or will create) on Workday job portals |
+| `DEFAULT_LOCATION` | Your city/state used to fill Location fields |
+| `VISA_INFO` | Your visa or work-rights status, used by Claude to answer screening questions |
+| `LANG_PROFICIENCY` | Languages you speak and your proficiency level in each |
+| `OUTPUT_BASE` | Folder where generated resumes/cover letters are saved |
+| `TEMPLATE_BASE` | Folder containing your resume/cover letter Word templates |
+| `SUPPLEMENTARY_FILES` | Extra PDFs uploaded alongside your resume (transcripts, references, etc.) |
+
+> **Tip — use your AI assistant:** Open `config.py`, paste it into your AI chat, and ask:
+> *"Fill in this config file based on my details: [paste your info]."*
+> The AI will update every field for you in one go.
+
+---
+
+### Step 2 — `applicant.json` (candidate profile)
+
+This file holds the personal information used to fill every Workday form field. Edit it with your own details, or ask your AI assistant to generate it:
+
+> *"Create an applicant.json for the Workday Application Copilot based on my CV: [paste CV text]."*
 
 ```json
 {
@@ -111,50 +137,26 @@ This file holds all your personal information used to fill the Workday form. Edi
       "gpa": "3.5/4.0"
     }
   ],
-  "certifications": [
-    "CFA Level 1"
-  ],
-  "skills": [
-    "Financial Modelling", "Excel", "Python", "Power BI", "SQL"
-  ]
+  "certifications": ["CFA Level 1"],
+  "skills": ["Financial Modelling", "Excel", "Python", "Power BI", "SQL"]
 }
 ```
 
-### Resume templates — `generator.py`
+---
 
-The tool selects from categorised resume/cover letter templates stored on your machine. Update these two paths in `generator.py` to match your folder structure:
+### Resume templates
 
-```python
-OUTPUT_BASE  = r"C:\Your\Path\To\Resumes\Output"   # where output folders are created
-TEMPLATE_BASE = r"C:\Your\Path\To\Resumes\Templates" # where template subfolders live
-```
+The tool selects from categorised resume/cover letter templates stored on your machine. Set `OUTPUT_BASE` and `TEMPLATE_BASE` in `config.py`, then create a subfolder per job category (e.g. `Templates\finance\`, `Templates\accounting\`).
 
-Each template subfolder (e.g. `Templates\investment\`, `Templates\accounting\`, `Templates\finance\`) must contain:
+Each subfolder must contain:
 
 | File | Purpose |
 |------|---------|
 | `Resume.pdf` | Uploaded to Workday |
 | `Cover Letter.docx` | Template with `_` blanks for Claude to fill |
-| `Resume.txt` | Plain-text resume loaded as context for AI |
+| `Resume.txt` | Plain-text resume for AI context |
 
-Cover letter blanks are represented by underscore characters (`_`). Claude replaces each blank sentence with job-specific language. Bold formatting on the job title is preserved automatically.
-
-### Supplementary uploads — `filler.py`
-
-If the Workday form allows multiple file uploads, the tool uploads:
-- Your resume PDF
-- Your cover letter PDF
-- Up to 3 supplementary PDFs (total ≤ 5 files, ≤ 5 MB)
-
-Update the `SUPPLEMENTARY` list in `filler.py` to point to your own files:
-
-```python
-SUPPLEMENTARY = [
-    r"C:\Your\Path\To\Recommendations.pdf",
-    r"C:\Your\Path\To\Transcript.pdf",
-    r"C:\Your\Path\To\Certifications.pdf",
-]
-```
+Cover letter blanks are underscore characters (`_`). Claude replaces each blank with job-specific language. Bold formatting on the job title is preserved automatically.
 
 ---
 
@@ -228,8 +230,9 @@ workday-application-copilot/
 ├── main.py           # Entry point — runs the full pipeline
 ├── scraper.py        # Playwright scraper — extracts job data and PDF
 ├── generator.py      # Template selection, cover letter filling, PDF conversion
-├── filler.py         # Playwright form automation
-├── applicant.json    # Your candidate profile (edit this)
+├── filler.py         # Playwright form automation (generic — do not edit)
+├── config.py         # YOUR settings: email, location, paths, languages  ← edit this
+├── applicant.json    # YOUR candidate profile: CV, experience, education  ← edit this
 ├── requirements.txt  # Python dependencies
 └── .env              # ANTHROPIC_API_KEY (create this, do not commit)
 ```

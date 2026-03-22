@@ -50,3 +50,15 @@ OUTPUT_BASE = r"X:\Career & Networking\Resumes\2026\AU"   # ← UPDATE THIS
 # Folder containing your resume/cover-letter Word templates (sub-folders per
 # job category, e.g.  TEMPLATE_BASE\Finance\  TEMPLATE_BASE\Accounting\ )
 TEMPLATE_BASE = r"X:\Career & Networking\Resumes\2026\AU\0"   # ← UPDATE THIS
+
+# ---------------------------------------------------------------------------
+# Supplementary file uploads (optional — uploaded alongside your resume)
+# ---------------------------------------------------------------------------
+# Add paths to any extra PDFs you want uploaded (e.g. transcripts, references).
+# Leave the list empty [] if you have none. Maximum 3 files, total ≤ 5 MB.
+
+SUPPLEMENTARY_FILES = [
+    r"X:\Career & Networking\Resumes\Recommendations\Recommendations.pdf",
+    r"X:\Career & Networking\Resumes\Grades\Monash University Transcript.pdf",
+    r"X:\Career & Networking\Resumes\Grades\CA ANZ Statement of Academic Record.pdf",
+]   # ← UPDATE THIS

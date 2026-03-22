@@ -21,7 +21,7 @@ from pathlib import Path
 import anthropic
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-from config import WORKDAY_EMAIL, DEFAULT_LOCATION, VISA_INFO, LANG_PROFICIENCY
+from config import WORKDAY_EMAIL, DEFAULT_LOCATION, VISA_INFO, LANG_PROFICIENCY, SUPPLEMENTARY_FILES
 
 APPLICANT_FILE = Path(__file__).parent / "applicant.json"
 
@@ -1313,11 +1313,7 @@ def _upload_files(page, resume_pdf: str, output_folder: str = ""):
       - Monash University Transcript.pdf
       - CA ANZ Statement of Academic Record.pdf
     """
-    SUPPLEMENTARY = [
-        r"X:\Career & Networking\Resumes\Recommendations\Recommendations.pdf",
-        r"X:\Career & Networking\Resumes\Grades\Monash University Transcript.pdf",
-        r"X:\Career & Networking\Resumes\Grades\CA ANZ Statement of Academic Record.pdf",
-    ]
+    SUPPLEMENTARY = SUPPLEMENTARY_FILES
 
     upload_input = page.query_selector("input[type='file']")
     if not upload_input:
