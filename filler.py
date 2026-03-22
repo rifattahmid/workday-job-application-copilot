@@ -21,6 +21,8 @@ from pathlib import Path
 import anthropic
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
+from config import WORKDAY_EMAIL, DEFAULT_LOCATION, VISA_INFO, LANG_PROFICIENCY
+
 APPLICANT_FILE = Path(__file__).parent / "applicant.json"
 
 
@@ -768,7 +770,7 @@ Instructions:
 - Return ONLY the answer to fill in — no explanation, no punctuation wrapper.
 - For yes/no questions, return exactly: Yes or No
 - For dropdowns, return the most likely option text.
-- For visa/work rights: candidate is on Graduate Visa (Subclass 485) expiring 27 April 2026, will extend for 4 more years.
+- For visa/work rights: {VISA_INFO}
 - Always use the candidate's exact details where available.
 - For "how did you hear about us" prefer LinkedIn, else Company Website.
 - Keep answers concise and professional."""
@@ -1237,7 +1239,7 @@ def _handle_gmail_login(page, gmail: str):
             input("  Press Enter once you are fully signed in: ")
 
 
-def _auto_apply_and_login(page, gmail: str = "rtahmid9999@gmail.com"):
+def _auto_apply_and_login(page, gmail: str = WORKDAY_EMAIL):
     """
     1. Navigate directly to job_url/apply/applyManually (skips the popup entirely)
     2. Try Gmail login on that page
@@ -1635,7 +1637,7 @@ def _fill_work_experience(page, applicant: dict):
         _fill_last_blank(page, "Company", exp["company"])
         _fill_last_blank(page, "Employer", exp["company"])
         _fill_last_blank(page, "Organization", exp["company"])
-        _fill_last_blank(page, "Location", "Melbourne, Victoria, Australia")
+        _fill_last_blank(page, "Location", DEFAULT_LOCATION)
 
         # For current job: tick "I currently work here" FIRST so the To field
         # disappears before we fill dates (prevents React re-render resetting From)
@@ -1988,14 +1990,6 @@ def _fill_education(page, applicant: dict, job_title: str = "", job_desc: str = 
 # ===========================================================================
 
 
-
-LANG_PROFICIENCY = {
-    "English":  {"level": "Advanced", "fallback": "Bilingual", "fluent": True},
-    "Bengali":  {"level": "Intermediate", "fallback": "Conversational", "fluent": True},
-    "Spanish":  {"level": "Beginner", "fallback": "Elementary", "fluent": False},
-    "Hindi":    {"level": "Beginner", "fallback": "Elementary", "fluent": False},
-    "Malay":    {"level": "Beginner", "fallback": "Elementary", "fluent": False},
-}
 
 
 def _fill_proficiency_dropdowns(page, level: str, fallback: str):
@@ -2776,7 +2770,7 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
             )
             if on_login_page:
                 print("\n  Still on the login/sign-in page — attempting auto sign-in...")
-                _wait_for_form_or_auto_signin(page, "rtahmid9999@gmail.com", None)
+                _wait_for_form_or_auto_signin(page, WORKDAY_EMAIL, None)
                 _wait_for_page_ready(page, timeout=10000)
                 page_text = page.inner_text("body").lower()
 

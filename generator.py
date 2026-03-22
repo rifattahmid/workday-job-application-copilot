@@ -7,10 +7,9 @@ from docx import Document
 from docx2pdf import convert
 from dotenv import load_dotenv
 
-load_dotenv()
+from config import OUTPUT_BASE, TEMPLATE_BASE
 
-OUTPUT_BASE = r"X:\Career & Networking\Resumes\2026\AU"
-TEMPLATE_BASE = r"X:\Career & Networking\Resumes\2026\AU\0"
+load_dotenv()
 
 DATE_PATTERN = re.compile(r"\d{1,2}\s+\w+\s+20\d{2}")
 
