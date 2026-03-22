@@ -16,6 +16,10 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Dev tools (not part of public repo)
+CONTEXT.md
+HANDOFF.md
+
 # Logs
 *.log
 
