@@ -8,14 +8,37 @@ An end-to-end automation tool that takes a Workday job URL and handles everythin
 
 1. **Scrapes** the Workday job posting — extracts the job title, description, and saves a PDF snapshot of the page
 2. **Classifies** the role (investment / accounting / finance) and selects the matching resume and cover letter template
-3. **Generates** a personalised cover letter — uses Claude Haiku to fill template blanks with job-specific language, then converts it to PDF
-4. **Fills** the Workday application form automatically — personal info, work history, education, skills, file uploads, disclosures, and a final AI sense-check before submission
+3. **Generates** a personalised cover letter — uses Claude AI to fill template blanks with job-specific language, then converts it to PDF
+4. **Fills** the Workday application form automatically — logs in, then fills personal info, work history, education, skills, file uploads, screening questions, disclosures, and runs a final AI sense-check before submission
+
+---
+
+## Project structure
+
+```
+workday-application-copilot/
+├── main.py           # Entry point — chains scrape → generate → fill in one run
+├── scraper.py        # Opens the Workday job page in a browser, extracts the job
+│                     #   title and description, and saves a PDF snapshot
+├── generator.py      # Classifies the job, picks the right resume/cover letter
+│                     #   template, uses Claude to fill cover letter blanks, and
+│                     #   converts the .docx to PDF ready for upload
+├── filler.py         # Playwright automation that fills the entire Workday form —
+│                     #   login, every form section, file uploads, and submission.
+│                     #   Generic engine — contains no personal data, do not edit
+├── config.py         # YOUR personal settings: email, location, file paths,
+│                     #   languages, visa info, supplementary uploads  ← edit this
+├── applicant.json    # YOUR candidate profile: name, address, work experience,
+│                     #   education, skills, certifications               ← edit this
+├── requirements.txt  # Python package dependencies
+└── .env              # Your Anthropic API key (create this file, never commit it)
+```
 
 ---
 
 ## Requirements
 
-- **Windows** (required — `docx2pdf` depends on Microsoft Word for PDF conversion)
+- **Windows** (required — `docx2pdf` uses Microsoft Word COM for PDF conversion)
 - **Python 3.10+**
 - **Microsoft Word** (for `.docx` → `.pdf` conversion)
 - **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com)
@@ -73,14 +96,14 @@ Open `config.py` and update every value marked with `← UPDATE THIS`:
 | Setting | What it is |
 |---------|-----------|
 | `WORKDAY_EMAIL` | The email you use (or will create) on Workday job portals |
-| `DEFAULT_LOCATION` | Your city/state used to fill Location fields |
-| `VISA_INFO` | Your visa or work-rights status, used by Claude to answer screening questions |
+| `DEFAULT_LOCATION` | Your city/state used to fill Location fields on forms |
+| `VISA_INFO` | Your visa or work-rights status — Claude uses this to answer screening questions |
 | `LANG_PROFICIENCY` | Languages you speak and your proficiency level in each |
-| `OUTPUT_BASE` | Folder where generated resumes/cover letters are saved |
-| `TEMPLATE_BASE` | Folder containing your resume/cover letter Word templates |
+| `OUTPUT_BASE` | Folder where generated resume/cover letter folders are saved |
+| `TEMPLATE_BASE` | Folder containing your resume/cover letter Word template subfolders |
 | `SUPPLEMENTARY_FILES` | Extra PDFs uploaded alongside your resume (transcripts, references, etc.) |
 
-> **Tip — use your AI assistant:** Open `config.py`, paste it into your AI chat, and ask:
+> **Tip — use your AI assistant:** Paste `config.py` into your AI chat and ask:
 > *"Fill in this config file based on my details: [paste your info]."*
 > The AI will update every field for you in one go.
 
@@ -88,7 +111,7 @@ Open `config.py` and update every value marked with `← UPDATE THIS`:
 
 ### Step 2 — `applicant.json` (candidate profile)
 
-This file holds the personal information used to fill every Workday form field. Edit it with your own details, or ask your AI assistant to generate it:
+This file holds the personal information used to fill every Workday form field — name, address, work experience, education, skills, and more. Edit it directly, or ask your AI assistant to generate it from your CV:
 
 > *"Create an applicant.json for the Workday Application Copilot based on my CV: [paste CV text]."*
 
@@ -152,11 +175,11 @@ Each subfolder must contain:
 
 | File | Purpose |
 |------|---------|
-| `Resume.pdf` | Uploaded to Workday |
-| `Cover Letter.docx` | Template with `_` blanks for Claude to fill |
-| `Resume.txt` | Plain-text resume for AI context |
+| `Resume.pdf` | The resume file uploaded to Workday |
+| `Cover Letter.docx` | Word template with `_` blanks that Claude fills in |
+| `Resume.txt` | Plain-text version of your resume used as AI context |
 
-Cover letter blanks are underscore characters (`_`). Claude replaces each blank with job-specific language. Bold formatting on the job title is preserved automatically.
+Cover letter blanks are underscore characters (`_`). Claude replaces each blank with job-specific language based on the job description. Bold formatting on the job title is preserved automatically.
 
 ---
 
@@ -164,7 +187,7 @@ Cover letter blanks are underscore characters (`_`). Claude replaces each blank 
 
 ### Full pipeline (recommended)
 
-Runs scrape → cover letter generation → form filling in sequence:
+Runs scrape → cover letter generation → form filling in one sequence:
 
 ```bash
 venv\Scripts\activate
@@ -193,25 +216,29 @@ You will be prompted for:
 
 ## How the form-filler works
 
-The filler navigates Workday page by page and handles each section automatically:
+The filler opens a visible browser window, navigates to the Workday application page, and handles each section automatically:
 
 | Section | What it does |
 |---------|-------------|
-| **Personal info** | Fills name, email, phone, address from `applicant.json` |
-| **Work experience** | Fills each job entry — title, company, dates, description |
-| **Education** | Fills institution, degree, field of study, dates, GPA |
-| **Skills** | Uses Claude to pick the 10 most relevant skills for the job, then selects them from Workday's skill search |
-| **File uploads** | Uploads resume + cover letter + supplementary PDFs (auto-detects single vs multi-file upload) |
-| **Disclosures / T&Cs** | Automatically ticks all agreement checkboxes and saves |
-| **Review & submit** | Runs a Claude sense-check on the full application, prints feedback, then waits for you to press Enter before submitting |
+| **Login** | Detects whether a Workday account exists — registers a new one if not, or signs in automatically using your saved credentials |
+| **File uploads** | Uploads your resume, cover letter, and any supplementary PDFs |
+| **Personal info** | Fills name, email, phone, and address from `applicant.json` |
+| **Work experience** | Adds each job entry — title, company, location, dates, and role description |
+| **Education** | Fills institution, degree type, field of study, dates, and GPA |
+| **Languages** | Adds each language with proficiency levels from `config.py` |
+| **Skills** | Uses Claude to pick the most relevant skills for the job, then selects them from Workday's skill search |
+| **Websites** | Fills LinkedIn and personal website links |
+| **Screening questions** | Answers yes/no and dropdown questions using Claude based on your profile |
+| **Disclosures / T&Cs** | Automatically ticks all agreement checkboxes |
+| **Review & submit** | Runs a Claude sense-check on the full application, prints a summary, then waits for you to press Enter before submitting |
 
-The browser runs in **visible (headed) mode** so you can watch and intervene at any point with `Ctrl+C`.
+The browser runs in **visible mode** so you can watch and intervene at any point. Press `Ctrl+C` in the terminal to stop at any time.
 
 ---
 
 ## Job classification
 
-The tool automatically classifies each job into one of three categories to select the right template:
+`generator.py` automatically classifies each job into one of three categories to select the right resume/cover letter template:
 
 | Category | Matched keywords |
 |----------|-----------------|
@@ -223,29 +250,13 @@ To add a new category, create the template subfolder and extend the `keywords` d
 
 ---
 
-## Project structure
-
-```
-workday-application-copilot/
-├── main.py           # Entry point — runs the full pipeline
-├── scraper.py        # Playwright scraper — extracts job data and PDF
-├── generator.py      # Template selection, cover letter filling, PDF conversion
-├── filler.py         # Playwright form automation (generic — do not edit)
-├── config.py         # YOUR settings: email, location, paths, languages  ← edit this
-├── applicant.json    # YOUR candidate profile: CV, experience, education  ← edit this
-├── requirements.txt  # Python dependencies
-└── .env              # ANTHROPIC_API_KEY (create this, do not commit)
-```
-
----
-
 ## Troubleshooting
 
 **`docx2pdf` conversion fails**
 Make sure Microsoft Word is installed and the cover letter `.docx` is not open in Word when you run the tool.
 
 **Playwright can't find elements**
-Workday's UI varies by company. If the filler stalls, the browser window stays open — you can continue manually. Press `Ctrl+C` in the terminal to stop.
+Workday's UI varies by company. If the filler stalls, the browser window stays open — you can continue filling manually. Press `Ctrl+C` in the terminal to stop the script.
 
 **API key not found**
 Ensure `.env` exists in the project root and contains `ANTHROPIC_API_KEY=your_key`. Do not wrap the key in quotes.
@@ -257,6 +268,6 @@ Workday's skill search uses a virtual scroll list. If a skill isn't found after 
 
 ## Notes
 
-- This tool is designed for **Australian Workday job applications** but works on any Workday instance
-- The Claude sense-check before submission is advisory — you always have final approval via the Enter prompt
+- Designed for **Australian Workday job applications** but works on any Workday instance
+- The Claude sense-check before submission is advisory — you always have final approval before anything is submitted
 - `.env`, `__pycache__/`, and output folders are excluded from git via `.gitignore`
