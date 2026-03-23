@@ -11,8 +11,8 @@ data["company"] = input("Enter Company Name: ").strip()
 
 output_folder = generate_application(data)
 
-fill = input("\nFill out the Workday application form now? (yes/no): ").strip().lower()
-if fill == "yes":
+if output_folder:
+    # Cover letter saved — auto-start Workday form filling
     # Find copied resume PDF in output folder
     resume_pdf = ""
     if output_folder:
@@ -26,4 +26,5 @@ if fill == "yes":
         job_desc=data.get("description", ""),
         resume_pdf=resume_pdf,
         output_folder=output_folder or "",
+        company=data.get("company", ""),
     )
