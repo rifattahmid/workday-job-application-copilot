@@ -1,4 +1,4 @@
-# Workday Application Copilot
+# Workday Job Application Copilot
 
 An end-to-end automation tool that takes a Workday job URL and handles everything: scraping the job posting, generating a tailored cover letter with Claude AI, and filling out the Workday application form using Playwright.
 
