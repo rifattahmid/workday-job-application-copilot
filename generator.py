@@ -30,7 +30,7 @@ def classify_job(title, description):
     Scoring:
     - Title keyword match  → +3  (title signals intent; weighted 3x over body text)
     - Description keyword  → +1
-    Tie-break order: finance > investment > accounting.
+    Tie-break order: investment > finance > accounting.
     """
     title_text = title.lower()
     desc_text  = description.lower()
@@ -41,15 +41,15 @@ def classify_job(title, description):
 
     # Keyword map — extend as new folders are added
     keywords = {
-        "investment": ["investment", "investor", "portfolio", "asset management",
+        "investment": ["investment", "investments", "investor", "portfolio", "asset management",
                        "acquisition", "acquisitions", "mergers", "m&a",
                        "transaction", "deals", "fund", "equity", "credit",
-                       "real estate", "real assets", "infrastructure", "capital markets"],
+                       "real estate", "real assets", "infrastructure", "capital markets",
+                       "investment analyst", "analyst"],
         "accounting": ["account", "audit", "tax", "bookkeep", "controller",
                        "cpa", "chartered accountant"],
         "finance":    ["finance", "financial", "fp&a", "treasury", "budget",
-                       "forecast", "analyst", "corporate finance", "m&a",
-                       "mergers", "acquisitions", "transaction", "deals", "valuation"],
+                       "forecast", "corporate finance", "valuation"],
     }
 
     TITLE_MULTIPLIER = 3
@@ -64,10 +64,10 @@ def classify_job(title, description):
 
     best = max(scores, key=lambda f: scores[f]) if scores else available[0]
 
-    # Tie-break: if two or more categories share the top score, prefer finance > investment > accounting
+    # Tie-break: if two or more categories share the top score, prefer investment > finance > accounting
     top_score = scores[best]
     if sum(1 for v in scores.values() if v == top_score) > 1:
-        for preferred in ("finance", "investment", "accounting"):
+        for preferred in ("investment", "finance", "accounting"):
             if preferred in available and scores.get(preferred, -1) == top_score:
                 best = preferred
                 break
@@ -83,6 +83,8 @@ def get_paths(category):
 
     resume_pdf = cover_docx = resume_txt = None
     for f in os.listdir(base):
+        if f.startswith("~$"):          # skip Word temporary lock files
+            continue
         f_lower = f.lower()
         if f_lower.endswith(".pdf") and "resume" in f_lower:
             resume_pdf = os.path.join(base, f)
