@@ -8,10 +8,10 @@ Paste this file at the start of your chat, then describe the issue or task.
 ## What this project does
 
 End-to-end automation for Workday job applications on Windows:
-1. **Scrape** — `c_scraper.py` pulls job title, description, saves a PDF snapshot
-2. **Generate** — `d_generator.py` picks the right resume/cover letter template by job category, uses Claude Haiku to fill cover letter blanks, converts `.docx` → `.pdf`
-3. **Fill** — `e_filler.py` uses Playwright (headed MS Edge browser) to log in to Workday and fill the entire application form page by page
-4. **Entry point** — `f_main.py` chains all three steps; after a successful cover letter save it auto-starts form filling without prompting. `e_filler.py` can also run standalone.
+1. **Scrape** — `a_scraper.py` pulls job title, description, saves a PDF snapshot
+2. **Generate** — `b_generator.py` picks the right resume/cover letter template by job category, uses Claude Haiku to fill cover letter blanks, converts `.docx` → `.pdf`
+3. **Fill** — `c_filler.py` uses Playwright (headed MS Edge browser) to log in to Workday and fill the entire application form page by page
+4. **Entry point** — `apply.py` chains all three steps; after a successful cover letter save it auto-starts form filling without prompting. `c_filler.py` can also run standalone.
 
 ---
 
@@ -19,22 +19,22 @@ End-to-end automation for Workday job applications on Windows:
 
 ```
 workday-application-copilot/
-├── f_main.py           # Entry point — scrape → generate → fill (auto, no prompt)
-├── c_scraper.py        # Playwright scraper for Workday job pages
-├── d_generator.py      # Cover letter generation + PDF conversion
-├── e_filler.py         # Workday form automation (~3200 lines, 55+ functions)
-├── b_config.py         # USER-SPECIFIC settings (email, paths, languages, etc.)
-├── a_applicant.json    # USER-SPECIFIC candidate profile (CV data)
+├── apply.py           # Entry point — scrape → generate → fill (auto, no prompt)
+├── a_scraper.py        # Playwright scraper for Workday job pages
+├── b_generator.py      # Cover letter generation + PDF conversion
+├── c_filler.py         # Workday form automation (~3200 lines, 55+ functions)
+├── d_config.py         # USER-SPECIFIC settings (email, paths, languages, etc.)
+├── e_applicant.json    # USER-SPECIFIC candidate profile (CV data)
 ├── requirements.txt
 └── .env              # ANTHROPIC_API_KEY
 ```
 
-**Rule:** `e_filler.py` and `d_generator.py` are generic automation — no personal data.
-All personal values live in `b_config.py` and `a_applicant.json`.
+**Rule:** `c_filler.py` and `b_generator.py` are generic automation — no personal data.
+All personal values live in `d_config.py` and `e_applicant.json`.
 
 ---
 
-## b_config.py — what it contains
+## d_config.py — what it contains
 
 ```python
 WORKDAY_EMAIL             # email used to log in / register on Workday
@@ -56,7 +56,7 @@ SUPPLEMENTARY_FILES       # list of extra PDFs uploaded alongside the resume
 
 ---
 
-## a_applicant.json — schema
+## e_applicant.json — schema
 
 ```json
 {
@@ -74,7 +74,7 @@ SUPPLEMENTARY_FILES       # list of extra PDFs uploaded alongside the resume
 
 ---
 
-## d_generator.py — key logic
+## b_generator.py — key logic
 
 **`classify_job(title, description)`**
 Scores available template subfolders against keyword lists. Title matches get a ×3 multiplier over description matches. Tie-break order: investment > finance > accounting. M&A/transaction terms ("mergers", "acquisition", "deals", "transaction", "m&a") map to "investment".
@@ -83,11 +83,11 @@ Scores available template subfolders against keyword lists. Title matches get a 
 Finds `_`-blank paragraphs in the `.docx` template, sends them to Claude Haiku for rewriting, saves the result. Preserves bold formatting on the job title.
 
 **`generate_application(data)`**
-Orchestrates classify → copy templates → fill cover letter → convert to PDF → open output folder. Returns `output_folder` on success; `f_main.py` uses this to auto-start form filling.
+Orchestrates classify → copy templates → fill cover letter → convert to PDF → open output folder. Returns `output_folder` on success; `apply.py` uses this to auto-start form filling.
 
 ---
 
-## e_filler.py — section map (current line numbers)
+## c_filler.py — section map (current line numbers)
 
 | # | Section | Key functions | ~Line |
 |---|---------|---------------|-------|
@@ -259,7 +259,7 @@ Clicks Save/Done if visible. **Not called** after work experience or education e
 | 18 | `'ElementHandle' object has no attribute 'triple_click'` in `_fill_field_of_study` | Replaced `target_el.triple_click()` with `target_el.click(click_count=3)` |
 | 19 | CA (Chartered Accountant) classified as "Master" / "Postgraduate" by degree dropdown | `DEGREE_MAP` updated: `"chartered"`, `"cpa"`, `"cfa"` → `("Professional", ["Graduate Diploma", "Graduate Certificate", "MS", "MA", "Postgraduate"])` |
 | 20 | `[save] No Save/Done button found` printed for every work experience and education entry, adding unnecessary DOM scan overhead | Removed `_save_section_form()` calls from `_fill_work_experience` and `_fill_education` (no inline save button on these Workday forms) |
-| 21 | Yes/no prompt shown before Workday form filling, requiring manual input | Removed prompt in `f_main.py`; form filling auto-starts when `generate_application` returns a non-empty `output_folder` |
+| 21 | Yes/no prompt shown before Workday form filling, requiring manual input | Removed prompt in `apply.py`; form filling auto-starts when `generate_application` returns a non-empty `output_folder` |
 | 22 | Google OAuth login attempted on every run, causing redirects and failures | Removed all Google sign-in logic from `_handle_gmail_login`; now uses email + user-prompted password only |
 
 ---
@@ -279,11 +279,11 @@ Clicks Save/Done if visible. **Not called** after work experience or education e
 ## How to debug a specific function
 
 1. Paste this file into your Claude chat
-2. Paste the relevant function(s) from `e_filler.py` (use line numbers from the section map above)
+2. Paste the relevant function(s) from `c_filler.py` (use line numbers from the section map above)
 3. Paste the error message or describe the observed behaviour
 4. Ask Claude to fix it
 
-To get a function: open `e_filler.py`, find it by line number, copy the full `def` block.
+To get a function: open `c_filler.py`, find it by line number, copy the full `def` block.
 
 ---
 
