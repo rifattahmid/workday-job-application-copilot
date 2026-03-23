@@ -16,9 +16,8 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Dev tools (not part of public repo)
-CONTEXT.md
-HANDOFF.md
+# Claude Code internal files
+.claude/
 
 # Logs
 *.log
@@ -37,5 +36,3 @@ test-results/
 # Jupyter (if any)
 .ipynb_checkpoints/
 
-# Environment variables
-.env
