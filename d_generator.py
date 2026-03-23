@@ -7,7 +7,7 @@ from docx import Document
 from docx2pdf import convert
 from dotenv import load_dotenv
 
-from config import OUTPUT_BASE, TEMPLATE_BASE
+from b_config import OUTPUT_BASE, TEMPLATE_BASE
 
 load_dotenv()
 
