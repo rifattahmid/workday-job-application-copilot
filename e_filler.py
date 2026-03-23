@@ -21,12 +21,12 @@ from pathlib import Path
 import anthropic
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-from config import (WORKDAY_EMAIL, DEFAULT_LOCATION, VISA_INFO, LANG_PROFICIENCY,
+from b_config import (WORKDAY_EMAIL, DEFAULT_LOCATION, VISA_INFO, LANG_PROFICIENCY,
                     SUPPLEMENTARY_FILES, SALUTATION, REFERRAL_SOURCE,
                     YEARS_EXPERIENCE, SALARY_EXPECTATION, SALARY_EXPECTATION_SINGLE,
                     LEAVING_REASON, INDIGENOUS_STATUS, WORK_RIGHTS_ANSWER)
 
-APPLICANT_FILE = Path(__file__).parent / "applicant.json"
+APPLICANT_FILE = Path(__file__).parent / "a_applicant.json"
 
 
 # ===========================================================================
