@@ -1,0 +1,101 @@
+{
+  "first_name": "Rifat",
+  "last_name": "Tahmid",
+  "email": "rtahmid9999@gmail.com",
+  "phone": "0415869643",
+  "phone_country_code": "+61",
+  "address": {
+    "street": "Rosslyn St",
+    "suburb": "West Melbourne",
+    "city": "Melbourne",
+    "state": "Victoria",
+    "state_abbr": "VIC",
+    "postcode": "3003",
+    "country": "Australia"
+  },
+  "linkedin": "https://www.linkedin.com/in/rifat-tahmid/",
+  "website": "https://github.com/dmtalien?tab=repositories",
+  "visa": {
+    "type": "Graduate Visa (Subclass 485)",
+    "expiry": "27/04/2026",
+    "authorized_to_work": true,
+    "requires_future_sponsorship": false,
+    "note": "Currently on a Graduate Visa (Subclass 485) expiring 27 April 2026. I will be applying for an extension which will provide an additional 4 years of work rights in Australia."
+  },
+  "referral_source": "LinkedIn",
+  "work_experience": [
+    {
+      "title": "Financial Business Analyst",
+      "company": "Lochard Energy",
+      "start": "11/2025",
+      "end": "Present",
+      "description": "Built a rolling FY27-29 budget and forecasting model for a $2B gas storage and compression company. Developed a contract-driven revenue and valuation scenario engine (FY26-52) with VBA. Re-based corporate valuation model using FY actuals and CPI escalations for board-level analysis."
+    },
+    {
+      "title": "Project Finance & FP&A Analyst",
+      "company": "Department of Transport and Planning (DTP)",
+      "start": "02/2024",
+      "end": "11/2025",
+      "description": "Supported EOM, budget performance tracking, variance analysis, and monthly forecasting for Victoria's $70B+ infrastructure portfolio using EcoSys and Oracle. Processed $700M+ in journal entries and reconciled $2B+ between GL and sub-ledgers. Designed Power BI dashboards for project analytics."
+    },
+    {
+      "title": "Financial Forensics Analyst, Treasury & Capital Markets",
+      "company": "Deloitte",
+      "start": "07/2023",
+      "end": "01/2024",
+      "description": "Applied Excel/VBA and Python to perform time-series, variance, and regression analyses on superannuation portfolios. Conducted scenario modelling, VaR simulations, and stress testing in R Studio. Performed due diligence on corporate actions including M&A and capital reconstructions."
+    },
+    {
+      "title": "Accountant",
+      "company": "DJI",
+      "start": "01/2023",
+      "end": "06/2023",
+      "description": "Managed A/R and A/P processing, nationwide financial reporting, and tax compliance in SAP across commercial, retail, and federal contracts. Reduced month-end close cycle time by 10%."
+    },
+    {
+      "title": "Financial Advisory & Client Engagement Intern",
+      "company": "Oak Financial Planning",
+      "start": "06/2022",
+      "end": "07/2022",
+      "description": "Utilised Xplan for scenario-based asset allocation modelling and portfolio rebalancing. Generated Review of Advice documents for 40+ clients. Conducted due diligence on investment reports and liaised with superannuation and insurance providers."
+    }
+  ],
+  "education": [
+    {
+      "institution": "Chartered Accountants ANZ",
+      "degree": "Chartered Accountant (CA)",
+      "field": "Accounting",
+      "start": "06/2024",
+      "end": "12/2026",
+      "gpa": null
+    },
+    {
+      "institution": "Monash University",
+      "degree": "Master of Banking and Finance",
+      "field": "Banking and Finance",
+      "start": "02/2021",
+      "end": "12/2022",
+      "gpa": "3.6/4.0"
+    },
+    {
+      "institution": "Monash University",
+      "degree": "Bachelor of Business and Commerce",
+      "field": "Accounting & Finance (Double Major)",
+      "start": "02/2017",
+      "end": "12/2020",
+      "gpa": null
+    }
+  ],
+  "certifications": [
+    "Financial Planning & Wealth Management Professional (FPWMP) – CFI Institute",
+    "Financial Modeling & Valuation Analyst (FMVA) – CFI Institute",
+    "Capital Markets & Securities Analyst (CMSA) – CFI Institute"
+  ],
+  "skills": [
+    "Financial Modelling", "Valuation", "FP&A", "Budget & Forecasting",
+    "Excel/VBA", "Python", "R", "Power BI", "SQL",
+    "Oracle ERP", "SAP", "EcoSys", "Xplan",
+    "Investment Analysis", "Portfolio Analysis", "Due Diligence",
+    "Variance Analysis", "Scenario Analysis", "Risk Analysis"
+  ]
+}
