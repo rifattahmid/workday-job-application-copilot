@@ -1,8 +1,8 @@
 import glob
 from pathlib import Path
-from c_scraper import scrape_workday
-from d_generator import generate_application
-from e_filler import fill_application
+from a_scraper import scrape_workday
+from b_generator import generate_application
+from c_filler import fill_application
 
 url = input("Paste Workday URL: ").strip()
 
