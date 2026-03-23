@@ -17,21 +17,22 @@ An end-to-end automation tool that takes a Workday job URL and handles everythin
 
 ```
 workday-application-copilot/
-├── main.py           # Entry point — chains scrape → generate → fill in one run
-├── scraper.py        # Opens the Workday job page in a browser, extracts the job
-│                     #   title and description, and saves a PDF snapshot
-├── generator.py      # Classifies the job, picks the right resume/cover letter
-│                     #   template, uses Claude to fill cover letter blanks, and
-│                     #   converts the .docx to PDF ready for upload
-├── filler.py         # Playwright automation that fills the entire Workday form —
-│                     #   login, every form section, file uploads, and submission.
-│                     #   Generic engine — contains no personal data, do not edit
-├── config.py         # YOUR personal settings: email, location, file paths,
-│                     #   languages, visa info, supplementary uploads  ← edit this
-├── applicant.json    # YOUR candidate profile: name, address, work experience,
-│                     #   education, skills, certifications               ← edit this
-├── requirements.txt  # Python package dependencies
-└── .env              # Your Anthropic API key (create this file, never commit it)
+├── f_main.py            # Entry point — chains scrape → generate → fill in one run
+├── c_scraper.py         # Opens the Workday job page in a browser, extracts the job
+│                        #   title and description, and saves a PDF snapshot
+├── d_generator.py       # Classifies the job, picks the right resume/cover letter
+│                        #   template, uses Claude to fill cover letter blanks, and
+│                        #   converts the .docx to PDF ready for upload
+├── e_filler.py          # Playwright automation that fills the entire Workday form —
+│                        #   login, every form section, file uploads, and submission.
+│                        #   Generic engine — contains no personal data, do not edit
+├── b_config.py          # YOUR personal settings: email, location, file paths,
+│                        #   languages, visa info, supplementary uploads  ← edit this
+├── a_applicant.json     # YOUR candidate profile: name, address, work experience,
+│                        #   education, skills, certifications               ← edit this
+├── requirements.txt     # Python package dependencies
+├── PROJECT_MEMORY.md    # Claude onboarding doc — paste into chat for debugging sessions
+└── .env                 # Your Anthropic API key (create this file, never commit it)
 ```
 
 ---
@@ -70,7 +71,7 @@ pip install -r requirements.txt
 ### 4. Install Playwright browsers
 
 ```bash
-playwright install chromium
+playwright install msedge
 ```
 
 ### 5. Set your Anthropic API key
@@ -85,35 +86,43 @@ ANTHROPIC_API_KEY=your_api_key_here
 
 ## Configuration
 
-There are two files to personalise before running: `config.py` and `applicant.json`.
+There are two files to personalise before running: `b_config.py` and `a_applicant.json`.
 
 ---
 
-### Step 1 — `config.py` (settings & paths)
+### Step 1 — `b_config.py` (settings & paths)
 
-Open `config.py` and update every value marked with `← UPDATE THIS`:
+Open `b_config.py` and update every value marked with `← UPDATE THIS`:
 
 | Setting | What it is |
 |---------|-----------|
 | `WORKDAY_EMAIL` | The email you use (or will create) on Workday job portals |
+| `SALUTATION` | Your title prefix — e.g. `"Mr."`, `"Ms."`, `"Dr."` |
+| `REFERRAL_SOURCE` | How you heard about the role — e.g. `"LinkedIn"`, `"Job Board"` |
+| `YEARS_EXPERIENCE` | Years of relevant experience — e.g. `"4"` |
+| `SALARY_EXPECTATION` | Expected salary range — e.g. `"100,000 – 110,000"` |
+| `SALARY_EXPECTATION_SINGLE` | Expected salary as a single figure — e.g. `"100,000"` |
+| `LEAVING_REASON` | Your reason for leaving current role |
+| `INDIGENOUS_STATUS` | Indigenous identity answer — typically `"Neither"` for Australian forms |
 | `DEFAULT_LOCATION` | Your city/state used to fill Location fields on forms |
 | `VISA_INFO` | Your visa or work-rights status — Claude uses this to answer screening questions |
+| `WORK_RIGHTS_ANSWER` | Exact option text for "right to work" dropdowns — e.g. `"Yes - I am a Temporary Resident with Full Working Rights"` |
 | `LANG_PROFICIENCY` | Languages you speak and your proficiency level in each |
 | `OUTPUT_BASE` | Folder where generated resume/cover letter folders are saved |
 | `TEMPLATE_BASE` | Folder containing your resume/cover letter Word template subfolders |
 | `SUPPLEMENTARY_FILES` | Extra PDFs uploaded alongside your resume (transcripts, references, etc.) |
 
-> **Tip — use your AI assistant:** Paste `config.py` into your AI chat and ask:
+> **Tip — use your AI assistant:** Paste `b_config.py` into your AI chat and ask:
 > *"Fill in this config file based on my details: [paste your info]."*
 > The AI will update every field for you in one go.
 
 ---
 
-### Step 2 — `applicant.json` (candidate profile)
+### Step 2 — `a_applicant.json` (candidate profile)
 
 This file holds the personal information used to fill every Workday form field — name, address, work experience, education, skills, and more. Edit it directly, or ask your AI assistant to generate it from your CV:
 
-> *"Create an applicant.json for the Workday Application Copilot based on my CV: [paste CV text]."*
+> *"Create an a_applicant.json for the Workday Application Copilot based on my CV: [paste CV text]."*
 
 ```json
 {
@@ -169,7 +178,7 @@ This file holds the personal information used to fill every Workday form field �
 
 ### Resume templates
 
-The tool selects from categorised resume/cover letter templates stored on your machine. Set `OUTPUT_BASE` and `TEMPLATE_BASE` in `config.py`, then create a subfolder per job category (e.g. `Templates\finance\`, `Templates\accounting\`).
+The tool selects from categorised resume/cover letter templates stored on your machine. Set `OUTPUT_BASE` and `TEMPLATE_BASE` in `b_config.py`, then create a subfolder per job category (e.g. `Templates\finance\`, `Templates\accounting\`).
 
 Each subfolder must contain:
 
@@ -191,20 +200,21 @@ Runs scrape → cover letter generation → form filling in one sequence:
 
 ```bash
 venv\Scripts\activate
-python main.py
+python f_main.py
 ```
 
 You will be prompted for:
 1. The Workday job URL
 2. The company name
-3. Whether to launch the form-filler after documents are generated
+
+The form-filler starts automatically once the cover letter is generated — no extra prompt.
 
 ### Form-filler only
 
 If you already have your documents and just want to fill the form:
 
 ```bash
-python filler.py
+python e_filler.py
 ```
 
 You will be prompted for:
@@ -222,10 +232,10 @@ The filler opens a visible browser window, navigates to the Workday application 
 |---------|-------------|
 | **Login** | Detects whether a Workday account exists — registers a new one if not, or signs in automatically using your saved credentials |
 | **File uploads** | Uploads your resume, cover letter, and any supplementary PDFs |
-| **Personal info** | Fills name, email, phone, and address from `applicant.json` |
+| **Personal info** | Fills name, email, phone, and address from `a_applicant.json` |
 | **Work experience** | Adds each job entry — title, company, location, dates, and role description |
 | **Education** | Fills institution, degree type, field of study, dates, and GPA |
-| **Languages** | Adds each language with proficiency levels from `config.py` |
+| **Languages** | Adds each language with proficiency levels from `b_config.py` |
 | **Skills** | Uses Claude to pick the most relevant skills for the job, then selects them from Workday's skill search |
 | **Websites** | Fills LinkedIn and personal website links |
 | **Screening questions** | Answers yes/no and dropdown questions using Claude based on your profile |
@@ -238,7 +248,7 @@ The browser runs in **visible mode** so you can watch and intervene at any point
 
 ## Job classification
 
-`generator.py` automatically classifies each job into one of three categories to select the right resume/cover letter template:
+`d_generator.py` automatically classifies each job into one of three categories to select the right resume/cover letter template:
 
 | Category | Matched keywords |
 |----------|-----------------|
@@ -246,7 +256,7 @@ The browser runs in **visible mode** so you can watch and intervene at any point
 | `accounting` | account, audit, tax, bookkeeping, controller, CPA, chartered accountant |
 | `finance` | finance, financial, FP&A, treasury, budget, forecast, analyst |
 
-To add a new category, create the template subfolder and extend the `keywords` dict in `generator.py`.
+To add a new category, create the template subfolder and extend the `keywords` dict in `d_generator.py`.
 
 ---
 
