@@ -21,7 +21,10 @@ from pathlib import Path
 import anthropic
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-from config import WORKDAY_EMAIL, DEFAULT_LOCATION, VISA_INFO, LANG_PROFICIENCY, SUPPLEMENTARY_FILES
+from config import (WORKDAY_EMAIL, DEFAULT_LOCATION, VISA_INFO, LANG_PROFICIENCY,
+                    SUPPLEMENTARY_FILES, SALUTATION, REFERRAL_SOURCE,
+                    YEARS_EXPERIENCE, SALARY_EXPECTATION, SALARY_EXPECTATION_SINGLE,
+                    LEAVING_REASON, INDIGENOUS_STATUS, WORK_RIGHTS_ANSWER)
 
 APPLICANT_FILE = Path(__file__).parent / "applicant.json"
 
@@ -246,11 +249,39 @@ def _workday_dropdown(page, btn_el, search_text: str,
                         opt.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
                         return True
 
-        # Last resort: pick first non-blank visible option directly
+        # Claude fallback — when no string match works, ask Claude to pick the best
+        # option from the full visible list. This handles salary ranges ("$100,000 -
+        # $110,000" vs our "100,000 – 110,000"), work rights variants, etc.
+        clean_opts = [
+            o.inner_text().strip() for o in opts
+            if o.inner_text().strip()
+            and o.inner_text().strip().lower() not in ("select one", "- select one -", "")
+        ]
+        if clean_opts:
+            try:
+                client = anthropic.Anthropic()
+                msg = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=60,
+                    messages=[{"role": "user", "content":
+                        f"Pick the single best option from this dropdown list for the target value.\n"
+                        f"Target: {search_text}\n"
+                        f"Options:\n" + "\n".join(f"- {o}" for o in clean_opts) +
+                        "\n\nReply with ONLY the exact option text, nothing else."}]
+                )
+                best = msg.content[0].text.strip()
+                if _pick_prompt_option(page, opts, best):
+                    print(f"      Claude picked dropdown option: {best!r}")
+                    return True
+            except Exception:
+                pass
+
+        # Absolute last resort: pick first non-blank option
         for opt in opts:
             txt = opt.inner_text().strip().lower()
             if txt and txt not in ("select one", "- select one -", ""):
                 opt.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                print(f"      WARNING: no match found — picked first option as fallback")
                 return True
 
     except Exception as e:
@@ -431,7 +462,9 @@ def _fill_exp_dates(page, start: str, end: str, is_current: bool) -> bool:
     _type_date(page, from_inp, start)
     time.sleep(0.3)
 
-    if not is_current and to_inp and end and end != "Present":
+    # Fill To date only when this is NOT a current role and a real end date exists
+    end_val = (end or "").strip().lower()
+    if not is_current and to_inp and end_val and end_val not in ("present", "current", "now"):
         _type_date(page, to_inp, end)
         time.sleep(0.3)
 
@@ -678,23 +711,46 @@ def _format_description(text: str) -> str:
     return "\n".join(bullets)
 
 
-def _degree_level(degree_str: str) -> str:
-    """Map a full degree name to a short keyword for Workday dropdown matching."""
+def _degree_level(degree_str: str) -> tuple:
+    """Map a full degree name to (search_text, fallbacks) for Workday dropdown matching.
+
+    Returns a tuple so callers can pass both to _workday_dropdown(), covering
+    forms that show full words ("Master of Science") and those with abbreviations
+    only ("MS", "MA").
+    """
+    DEGREE_MAP = {
+        "bachelor":     ("Bachelor",    ["BS", "BA", "B.S.", "B.A.", "Bachelors", "Undergraduate"]),
+        "bba":          ("Bachelor",    ["BS", "BA", "B.S.", "B.A.", "Bachelors", "Undergraduate"]),
+        "bsc":          ("Bachelor",    ["BS", "BA", "B.S.", "B.A.", "Bachelors", "Undergraduate"]),
+        "b.sc":         ("Bachelor",    ["BS", "BA", "B.S.", "B.A.", "Bachelors", "Undergraduate"]),
+        "b.comm":       ("Bachelor",    ["BS", "BA", "B.S.", "B.A.", "Bachelors", "Undergraduate"]),
+        "commerce":     ("Bachelor",    ["BS", "BA", "B.S.", "B.A.", "Bachelors", "Undergraduate"]),
+        "mba":          ("MBA",         ["M.B.A.", "Master of Business", "Master", "MS", "MA", "Postgraduate"]),
+        "master":       ("Master",      ["MS", "MA", "M.S.", "M.A.", "Masters", "MSc", "Postgraduate"]),
+        "msc":          ("Master",      ["MS", "MA", "M.S.", "M.A.", "Masters", "MSc", "Postgraduate"]),
+        "mfin":         ("Master",      ["MS", "MA", "M.S.", "M.A.", "Masters", "MSc", "Postgraduate"]),
+        "m.fin":        ("Master",      ["MS", "MA", "M.S.", "M.A.", "Masters", "MSc", "Postgraduate"]),
+        "postgraduate": ("Master",      ["MS", "MA", "M.S.", "M.A.", "Masters", "Postgraduate"]),
+        "phd":          ("PhD",         ["Ph.D.", "Doctorate", "Doctor", "DBA"]),
+        "doctor":       ("PhD",         ["Ph.D.", "Doctorate", "Doctor", "DBA"]),
+        "dba":          ("PhD",         ["Ph.D.", "Doctorate", "Doctor", "DBA"]),
+        "associate":    ("Associate",   ["AS", "A.S.", "AA"]),
+        "diploma":      ("Diploma",     ["Certificate", "Cert"]),
+        "certificate":  ("Certificate", ["Cert", "Diploma"]),
+        "high school":  ("High School", ["Secondary", "GED", "HSC"]),
+        "chartered":    ("Professional", ["Graduate Diploma", "Graduate Certificate",
+                                          "MS", "MA", "Postgraduate"]),
+        "cpa":          ("Professional", ["Graduate Diploma", "Graduate Certificate",
+                                          "MS", "MA", "Postgraduate"]),
+        "cfa":          ("Professional", ["Graduate Diploma", "Graduate Certificate",
+                                          "MS", "MA", "Postgraduate"]),
+        "professional": ("Postgraduate", ["Professional", "Master", "MS", "MA"]),
+    }
     d = degree_str.lower()
-    if any(x in d for x in ["master", "mba", "msc", "mfin", "m.fin"]):
-        return "Master"
-    if any(x in d for x in ["bachelor", "bba", "bsc", "b.sc", "b.comm", "commerce"]):
-        return "Bachelor"
-    if any(x in d for x in ["doctor", "phd", "dba"]):
-        return "Doctor"
-    if "associate" in d:
-        return "Associate"
-    if "diploma" in d or "certificate" in d:
-        return "Certificate"
-    # Professional qualifications (CA, CPA, CFA, etc.) → Postgraduate as primary attempt
-    if any(x in d for x in ["chartered", " ca", "cpa", "cfa", "professional"]):
-        return "Postgraduate"
-    return "Postgraduate"   # safe default — most Workday instances have this option
+    for key, result in DEGREE_MAP.items():
+        if key in d:
+            return result
+    return ("Other", [])
 
 
 def _education_field(edu_field: str, job_title: str, job_desc: str, edu_degree: str = "") -> str:
@@ -747,6 +803,15 @@ def _screening_value(label_text: str) -> str:
                                 "confirm that", "accept the", "read and understand",
                                 "terms and condition", "privacy policy", "code of conduct"]):
         return "Yes"
+    # Consent/acknowledgement of company process (medical assessment, background check,
+    # drug test, reference check, etc.) → Yes.
+    # These questions ask the applicant to confirm they understand or accept a process.
+    if any(x in lbl for x in ["i understand", "please confirm", "please acknowledge",
+                                "medical assessment", "background check", "background screen",
+                                "drug test", "drug screen", "criminal check", "police check",
+                                "reference check", "pre-employment", "condition of employment",
+                                "will be required to"]):
+        return "Yes"
     # Everything else defaults to No (sponsorship, visa, affiliations, etc.)
     return "No"
 
@@ -757,16 +822,42 @@ def _screening_value(label_text: str) -> str:
 
 
 
-def _claude_answer(question: str, context: str, applicant: dict, job_title: str = "", job_desc: str = "") -> str:
-    """Ask Claude to answer a single form question given applicant data and job context."""
+def _claude_answer(question: str, context: str, applicant: dict, job_title: str = "",
+                   job_desc: str = "", long_form: bool = False) -> str:
+    """Ask Claude to answer a single form question given applicant data and job context.
+
+    long_form=True: used for open-ended textarea questions (skills match, motivation, etc.)
+    — generates a full paragraph with higher token limit instead of a brief answer.
+    """
     client = anthropic.Anthropic()
+
+    if long_form:
+        extra_instructions = (
+            "- This is an open-ended textarea question requiring a substantive paragraph (3–5 sentences).\n"
+            "- Highlight specific skills, experiences, and achievements from the candidate's work history "
+            "that are most relevant to this role and company.\n"
+            "- Be specific and concrete — mention real skills, tools, or achievements from the candidate's profile.\n"
+            "- Write in first person. Do not start with 'I' — begin with an action word or skill.\n"
+            "- Do NOT write a generic answer. Tailor it to the job title and description provided.\n"
+            "- Do not include headers, bullet points, or labels — just the paragraph text."
+        )
+        max_tokens = 600
+    else:
+        extra_instructions = (
+            "- Return ONLY the answer to fill in — no explanation, no punctuation wrapper.\n"
+            "- For yes/no questions, return exactly: Yes or No\n"
+            "- For dropdowns, return the most likely option text.\n"
+            "- Keep answers concise and professional."
+        )
+        max_tokens = 200
+
     prompt = f"""You are filling out a job application form on behalf of this candidate.
 
 CANDIDATE INFO:
 {json.dumps(applicant, indent=2)}
 
 JOB TITLE: {job_title}
-JOB DESCRIPTION (excerpt): {job_desc[:1000]}
+JOB DESCRIPTION (excerpt): {job_desc[:1500]}
 
 FORM QUESTION / FIELD LABEL:
 {question}
@@ -774,42 +865,75 @@ FORM QUESTION / FIELD LABEL:
 CONTEXT (nearby text on the page):
 {context}
 
+VISA / WORK RIGHTS: {VISA_INFO}
+
 Instructions:
-- Return ONLY the answer to fill in — no explanation, no punctuation wrapper.
-- For yes/no questions, return exactly: Yes or No
-- For dropdowns, return the most likely option text.
-- For visa/work rights: {VISA_INFO}
+{extra_instructions}
 - Always use the candidate's exact details where available.
-- For "how did you hear about us" prefer LinkedIn, else Company Website.
-- Keep answers concise and professional."""
+- For "how did you hear about us" prefer LinkedIn, else Company Website."""
 
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=200,
+        max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}]
     )
-    return message.content[0].text.strip()
+    return _clean_claude_text(message.content[0].text.strip())
+
+
+def _clean_claude_text(text: str) -> str:
+    """Strip prompt-header lines and normalise dashes in a Claude-generated answer.
+
+    Removes any line that looks like a meta-instruction rather than an actual answer:
+    - Lines starting with '#' (markdown headings / comment-style headers)
+    - Lines starting with 'ANSWER TO:' or 'Answer:'
+
+    Also replaces em dashes (—) and en dashes (–) with a plain comma-space so the
+    text reads naturally in a form field rather than looking like a formatted document.
+    """
+    lines = text.splitlines()
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip header / meta lines
+        if stripped.startswith("#"):
+            continue
+        lc = stripped.lower()
+        if lc.startswith("answer to:") or lc.startswith("answer:"):
+            continue
+        cleaned.append(line)
+    result = "\n".join(cleaned).strip()
+    # Replace typographic dashes with plain comma-space
+    result = result.replace("—", ", ").replace("–", ", ")
+    # Collapse any double comma-spaces introduced by consecutive dashes
+    result = re.sub(r",\s*,", ",", result)
+    return result
 
 
 def _claude_skills(job_title: str, job_desc: str, applicant: dict) -> str:
-    """Return a comma-separated list of the 10 most in-demand skills for this job.
-    Claude picks industry-standard skill names (not limited to applicant's list)
-    so they match what Workday's skill database actually contains."""
+    """Return a comma-separated list of the 10 most relevant skills for this job.
+    Skills must be specific and distinct — no generic single-word terms that would
+    match dozens of Workday database entries (e.g. 'Valuation' → use 'DCF Valuation').
+    """
     client = anthropic.Anthropic()
     applicant_skills = ", ".join(applicant.get("skills", []))
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=120,
-        messages=[{"role": "user", "content": f"""You are filling a job application skills section.
-List the 10 most important skills for this role using standard industry skill names
-(short, commonly used terms that would exist in a corporate HR skill database).
-Prefer skills the applicant likely has based on their background.
+        max_tokens=160,
+        messages=[{"role": "user", "content": f"""You are filling the Skills section of a job application.
+Select exactly 10 skills that are most relevant to this specific role.
 
-APPLICANT BACKGROUND SKILLS: {applicant_skills}
+Rules:
+- Each skill must be a specific, distinct technical skill (e.g. "Financial Modelling", "DCF Analysis", "Management Reporting")
+- Do NOT use generic single-word terms like "Valuation", "Finance", "Analysis" — these match hundreds of database entries
+- Do NOT repeat the same concept with different prefixes (e.g. do not list "Bond Valuation", "Debt Valuation", "Fair Valuation" — pick ONE valuation skill)
+- Prefer skills the applicant already has based on their background
+- Use standard corporate HR skill database names (short, commonly used terms)
+
+APPLICANT SKILLS: {applicant_skills}
 JOB TITLE: {job_title}
-JOB DESC: {job_desc[:600]}
+JOB DESCRIPTION: {job_desc[:800]}
 
-Return ONLY a comma-separated list of exactly 10 skills. No numbering, no explanations."""}]
+Return ONLY a comma-separated list of exactly 10 skills. No numbering, no explanations, no headers."""}]
     )
     return message.content[0].text.strip()
 
@@ -946,7 +1070,11 @@ def _wait_for_form_or_auto_signin(page, email: str, password: str | None, timeou
         if _is_on_signin_page(page):
             if password and not signin_attempted:
                 # Silently wait until the password field actually renders before attempting
-                pw_visible = [e for e in page.query_selector_all("input[type='password']") if e.is_visible()]
+                try:
+                    pw_visible = [e for e in page.query_selector_all("input[type='password']") if e.is_visible()]
+                except Exception:
+                    time.sleep(1.0)
+                    continue  # page navigating — wait and retry
                 if not pw_visible:
                     time.sleep(1.0)
                     continue  # form still loading — don't spam messages
@@ -976,281 +1104,165 @@ def _wait_for_form_or_auto_signin(page, email: str, password: str | None, timeou
 
 def _handle_gmail_login(page, gmail: str):
     """
-    Detect sign-in page → click Google → fill email → click Next → wait for password.
-    Waits for the actual Workday sign-in FORM to render (not just nav links).
+    Detect Workday sign-in page → fill email → prompt user for password → sign in.
+    Handles both sign-in (1 password field) and new account registration (2 password fields).
     Returns the password entered during registration (or None).
     """
     print(f"  [Login check] URL: {page.url}")
 
-    # Wait up to 25s for ANY sign-in form element to appear.
-    # Use wait_for_function with a combined check — avoids 8s-per-selector sequential waste.
-    COMBINED_SELECTOR = (
-        "[data-automation-id='signIn'], "
-        "[data-automation-id='createAccount'], "
-        "[data-automation-id='googleSignIn'], "
-        "[data-automation-id='signInWithGoogle'], "
-        "[data-automation-id='signInGoogle'], "
-        "button[title*='Google' i], "
-        "a[title*='Google' i], "
-        "[class*='signIn' i], "
-        "[class*='login' i]"
-    )
-    try:
-        page.wait_for_function(
-            f"() => !!document.querySelector(`{COMBINED_SELECTOR}`)",
-            timeout=12000
-        )
-        print("  Sign-in form detected — giving React 1s to finish rendering...")
-        time.sleep(1.0)
-    except Exception:
-        print("  Timed out waiting for sign-in form — waiting 3s for React...")
-        time.sleep(3.0)
-
-    print("  Looking for Google sign-in button...")
-
-    # Step 1: Try Workday-specific selectors for Google sign-in (fastest, most reliable)
-    google_clicked = False
-    GOOGLE_SELS = [
-        "[data-automation-id='GoogleSignInButton']",
-        "[data-automation-id='googleSignIn']",
-        "[data-automation-id='signInWithGoogle']",
-        "[aria-label='Sign in with Google']",
-        "button[title*='Google' i]",
+    # Poll up to 10s for the email input to become visible.
+    EMAIL_SELECTORS = [
+        "input[type='email']",
+        "input[name='email']",
+        "input[name='username']",
+        "input[autocomplete='email']",
+        "input[autocomplete='username']",
+        "input[id*='email' i]",
+        "input[id*='user' i]",
     ]
-    for sel in GOOGLE_SELS:
-        try:
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        for sel in EMAIL_SELECTORS:
             el = page.query_selector(sel)
             if el and el.is_visible():
-                el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-                google_clicked = True
-                print(f"  Clicked Google sign-in button via selector: {sel}")
                 break
-        except Exception:
-            continue
-
-    # Step 2: Generic fallback — ONLY check <button> and <a>, using DIRECT text only
-    # (never div/li which inherit all children's text and cause false matches)
-    if not google_clicked:
-        for el in page.query_selector_all("button, a"):
-            try:
-                if not el.is_visible():
-                    continue
-                # Use evaluate to get only the element's OWN direct text (not children)
-                own_txt = el.evaluate("""el => {
-                    return [...el.childNodes]
-                        .filter(n => n.nodeType === 3)  // text nodes only
-                        .map(n => n.textContent)
-                        .join(' ')
-                        .toLowerCase();
-                }""")
-                aria  = (el.get_attribute("aria-label") or "").lower()
-                aid   = (el.get_attribute("data-automation-id") or "").lower()
-                title = (el.get_attribute("title") or "").lower()
-                combined = f"{own_txt} {aria} {aid} {title}"
-                if "google" in combined:
-                    el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-                    google_clicked = True
-                    print(f"  Clicked Google sign-in button (fallback, matched: {combined[:80]!r}).")
-                    break
-            except Exception:
-                continue
-
-    if google_clicked:
-        # Google opens in the same tab — wait for accounts.google.com to load
-        try:
-            page.wait_for_load_state("domcontentloaded", timeout=12000)
-        except Exception:
-            pass
-        _wait_for_page_ready(page, timeout=10000)
-        time.sleep(1.5)
-        print(f"  [Gmail] Now on: {page.url}")
-
-        # Wait explicitly for the email input to appear (Google renders it async)
-        email_inp = None
-        for email_sel in [
-            "input[type='email']",
-            "input[name='identifier']",
-            "input[autocomplete='email']",
-        ]:
-            try:
-                page.wait_for_selector(email_sel, timeout=8000, state="visible")
-                email_inp = page.query_selector(email_sel)
-                if email_inp and email_inp.is_visible():
-                    break
-            except Exception:
-                continue
-
-        if email_inp and email_inp.is_visible():
-            email_inp.click()
+        else:
             time.sleep(0.3)
-            email_inp.fill(gmail)
-            print(f"  Filled Gmail: {gmail}")
-            time.sleep(0.5)
-            # Click Next
-            next_clicked = False
-            for sel in [
-                "#identifierNext",
-                "#identifierNext button",
-                "button[jsname='LgbsSe']",
-                "div[jsname='LgbsSe']",
-                "[data-primary-action-label]",
-            ]:
+            continue
+        break
+
+    print("  Filling email/password sign-in form...")
+
+    # Fill email field
+    email_inp = None
+    for sel in [
+        "input[type='email']",
+        "input[name='email']",
+        "input[name='username']",
+        "input[autocomplete='email']",
+        "input[autocomplete='username']",
+        "input[id*='email' i]",
+        "input[id*='user' i]",
+    ]:
+        el = page.query_selector(sel)
+        if el and el.is_visible():
+            email_inp = el
+            break
+
+    if email_inp:
+        email_inp.click()
+        time.sleep(0.2)
+        email_inp.fill(gmail)
+        print(f"  Filled email field: {gmail}")
+    else:
+        print("  Could not find email field.")
+
+    # Check for password fields — if there are two, it's a registration form
+    pw_inputs = [
+        el for el in page.query_selector_all("input[type='password']")
+        if el.is_visible()
+    ]
+
+    if len(pw_inputs) >= 2:
+        # Registration form: new password + confirm password
+        print("  Found two password fields — this looks like a new account registration page.")
+        password = input("  Enter the password you want to create for this account: ").strip()
+
+        for pw_inp in pw_inputs[:2]:
+            pw_inp.click()
+            time.sleep(0.2)
+            pw_inp.fill(password)
+            time.sleep(0.2)
+        print("  Filled new password and confirm password fields.")
+
+        # Click the create account / register button
+        # First try Workday automation-id patterns
+        register_clicked = False
+        WORKDAY_CREATE_SELS = [
+            "[data-automation-id='createAccountButton']",
+            "[data-automation-id='createAccount']",
+            "[data-automation-id='registerButton']",
+            "[data-automation-id='register']",
+            "[data-automation-id='signUp']",
+            "[data-automation-id='submitButton']",
+            "[data-automation-id='submit']",
+            "[aria-label='Create Account'][role='button']",
+            "[data-automation-id='click_filter'][aria-label='Create Account']",
+        ]
+        for sel in WORKDAY_CREATE_SELS:
+            try:
                 el = page.query_selector(sel)
                 if el and el.is_visible():
-                    el.click()
-                    next_clicked = True
-                    print("  Clicked Next — password page loading...")
+                    el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                    register_clicked = True
+                    print(f"  Clicked register/create button via automation-id: {sel}")
                     break
-            if not next_clicked:
-                email_inp.press("Enter")
-                print("  Pressed Enter to advance to password page.")
-        else:
-            print("  Could not find Google email input — please type it manually.")
+            except Exception:
+                continue
 
-        print("\n  Please enter your password (and complete any 2-factor) in the browser.")
-        input("  Press Enter once you are fully signed in: ")
-        # After Google sign-in, auto-detect form vs any further redirect
-        _wait_for_form_or_auto_signin(page, gmail, None)
-        return None
-
-    else:
-        # No Google button found — this may be a manual account registration page.
-        print("  No Google sign-in button found — checking for manual registration form...")
-
-        # Fill email field
-        email_inp = None
-        for sel in [
-            "input[type='email']",
-            "input[name='email']",
-            "input[name='username']",
-            "input[autocomplete='email']",
-            "input[autocomplete='username']",
-            "input[id*='email' i]",
-            "input[id*='user' i]",
-        ]:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                email_inp = el
-                break
-
-        if email_inp:
-            email_inp.click()
-            time.sleep(0.2)
-            email_inp.fill(gmail)
-            print(f"  Filled email field: {gmail}")
-        else:
-            print("  Could not find email field.")
-
-        # Check for password fields — if there are two, it's a registration form
-        pw_inputs = [
-            el for el in page.query_selector_all(
-                "input[type='password']"
-            )
-            if el.is_visible()
-        ]
-
-        if len(pw_inputs) >= 2:
-            # Registration form: new password + confirm password
-            print("  Found two password fields — this looks like a new account registration page.")
-            password = input("  Enter the password you want to create for this account: ").strip()
-
-            for pw_inp in pw_inputs[:2]:
-                pw_inp.click()
-                time.sleep(0.2)
-                pw_inp.fill(password)
-                time.sleep(0.2)
-            print("  Filled new password and confirm password fields.")
-
-            # Click the create account / register button
-            # First try Workday automation-id patterns
-            register_clicked = False
-            WORKDAY_CREATE_SELS = [
-                "[data-automation-id='createAccountButton']",
-                "[data-automation-id='createAccount']",
-                "[data-automation-id='registerButton']",
-                "[data-automation-id='register']",
-                "[data-automation-id='signUp']",
-                "[data-automation-id='submitButton']",
-                "[data-automation-id='submit']",
-                # Workday sometimes uses click_filter for the Create Account div-button
-                "[aria-label='Create Account'][role='button']",
-                "[data-automation-id='click_filter'][aria-label='Create Account']",
+        # Fallback: scan all clickable elements by text
+        if not register_clicked:
+            CREATE_KEYWORDS = [
+                "create account", "create an account", "register", "sign up",
+                "create", "submit", "get started", "continue",
             ]
-            for sel in WORKDAY_CREATE_SELS:
+            candidates = []
+            for el in page.query_selector_all("button, input[type='submit'], [role='button'], a"):
                 try:
-                    el = page.query_selector(sel)
-                    if el and el.is_visible():
+                    if not el.is_visible():
+                        continue
+                    txt = (el.inner_text() or el.get_attribute("value") or "").strip().lower()
+                    aid = (el.get_attribute("data-automation-id") or "").lower()
+                    aria = (el.get_attribute("aria-label") or "").strip().lower()
+                    label = txt or aria or aid
+                    candidates.append(f"'{label}'")
+                    if any(k in txt or k in aid or k in aria for k in CREATE_KEYWORDS):
                         el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
                         register_clicked = True
-                        print(f"  Clicked register/create button via automation-id: {sel}")
+                        print(f"  Clicked register/create button: '{label}'")
                         break
                 except Exception:
                     continue
-
-            # Fallback: scan all clickable elements by text
             if not register_clicked:
-                CREATE_KEYWORDS = [
-                    "create account", "create an account", "register", "sign up",
-                    "create", "submit", "get started", "continue",
-                ]
-                candidates = []
-                for el in page.query_selector_all("button, input[type='submit'], [role='button'], a"):
-                    try:
-                        if not el.is_visible():
-                            continue
-                        txt = (el.inner_text() or el.get_attribute("value") or "").strip().lower()
-                        aid = (el.get_attribute("data-automation-id") or "").lower()
-                        aria = (el.get_attribute("aria-label") or "").strip().lower()
-                        label = txt or aria or aid
-                        candidates.append(f"'{label}'")
-                        if any(k in txt or k in aid or k in aria for k in CREATE_KEYWORDS):
-                            el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-                            register_clicked = True
-                            print(f"  Clicked register/create button: '{label}'")
-                            break
-                    except Exception:
-                        continue
-                if not register_clicked:
-                    print(f"  Could not find a create/register button.")
-                    print(f"  Visible buttons found: {', '.join(candidates[:15]) or 'none'}")
-                    input("  Please click the create/register button manually, then press Enter: ")
+                print(f"  Could not find a create/register button.")
+                print(f"  Visible buttons found: {', '.join(candidates[:15]) or 'none'}")
+                input("  Please click the create/register button manually, then press Enter: ")
 
-            # Whether clicked via automation-id or text-scan fallback, handle the redirect
-            if register_clicked:
-                print("  Account creation submitted — watching for redirect...")
-                try:
-                    page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
-                time.sleep(2.0)
-                _wait_for_form_or_auto_signin(page, gmail, password)
-                return password
+        if register_clicked:
+            print("  Account creation submitted — watching for redirect...")
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+            time.sleep(2.0)
+            _wait_for_form_or_auto_signin(page, gmail, password)
+            return password
 
-        elif len(pw_inputs) == 1:
-            # Single password field — sign-in to existing account.
-            print("  Found sign-in form (single password field).")
-            password = input("  Enter your Workday account password to auto sign in: ").strip()
-            if password:
-                _auto_fill_signin(page, gmail, password)
-                try:
-                    page.wait_for_load_state("domcontentloaded", timeout=12000)
-                except Exception:
-                    pass
-                time.sleep(2.0)
-                _wait_for_form_or_auto_signin(page, gmail, password)
-                return password
-            else:
-                input("  Press Enter once you are fully signed in: ")
-
+    elif len(pw_inputs) == 1:
+        # Single password field — sign-in to existing account.
+        print("  Found sign-in form (single password field).")
+        password = input("  Enter your Workday account password to auto sign in: ").strip()
+        if password:
+            _auto_fill_signin(page, gmail, password)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=12000)
+            except Exception:
+                pass
+            time.sleep(2.0)
+            _wait_for_form_or_auto_signin(page, gmail, password)
+            return password
         else:
-            print("  No password fields found — please complete sign-in manually.")
             input("  Press Enter once you are fully signed in: ")
+
+    else:
+        print("  No password fields found — please complete sign-in manually.")
+        input("  Press Enter once you are fully signed in: ")
 
 
 def _auto_apply_and_login(page, gmail: str = WORKDAY_EMAIL):
     """
     1. Navigate directly to job_url/apply/applyManually (skips the popup entirely)
-    2. Try Gmail login on that page
+    2. Sign in via email + user-prompted password
     3. If /applyManually fails (404 / redirect away), fall back to job_url/apply
        and wait for user to log in and reach first form page manually
     4. Prompt user to press Enter once on first form page
@@ -1294,12 +1306,11 @@ def _auto_apply_and_login(page, gmail: str = WORKDAY_EMAIL):
     # Give the Workday React app a moment to render the sign-in form
     time.sleep(1.0)
 
-    # --- Step 2: Try Gmail login ---
+    # --- Step 2: Email/password sign-in ---
     captured_password = _handle_gmail_login(page, gmail)
 
     # --- Step 3: Auto-detect form or handle any remaining sign-in redirect ---
     # If _handle_gmail_login already resolved to the form, this is a no-op.
-    # If we're still on a sign-in page (e.g. Google flow landed here), auto-sign-in.
     if not _is_on_application_form(page):
         _wait_for_form_or_auto_signin(page, gmail, captured_password)
 
@@ -1534,34 +1545,111 @@ def _fill_personal_info(page, applicant: dict, job_title: str, job_desc: str):
     _fill_by_label(page, "First Name", a["first_name"], exclude="preferred")
     _fill_by_label(page, "Last Name",  a["last_name"],  exclude="preferred")
 
-    # Salutation / Title dropdown
-    salutation = a.get("salutation", "Mr.")
-    salutation_fallbacks = ["Mr", "Mr.", "Sir"]
+    # Ensure "I have a preferred name" checkbox is UNCHECKED — never tick it.
+    # If the form pre-ticks it for some reason, uncheck it; otherwise leave it alone.
+    _PREF_NAME_FRAGMENTS = [
+        "preferred name", "use a different name", "goes by a different name",
+        "alternate name", "known as",
+    ]
+    for cb in page.query_selector_all("input[type='checkbox']"):
+        try:
+            cb_label = cb.evaluate("""el => {
+                if (el.id) {
+                    const l = document.querySelector('label[for="' + el.id + '"]');
+                    if (l) return l.textContent.trim().toLowerCase();
+                }
+                const p = el.closest('label');
+                if (p) return p.textContent.trim().toLowerCase();
+                return '';
+            }""")
+            if any(f in cb_label for f in _PREF_NAME_FRAGMENTS):
+                if cb.is_checked():
+                    cb.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                    time.sleep(0.3)
+                    print("    Unchecked 'preferred name' checkbox")
+                # Whether checked or not, stop after finding it
+                break
+        except Exception:
+            continue
+
+    # Salutation / Title dropdown — detect purely by label, no position assumptions.
+    salutation = SALUTATION
+    salutation_fallbacks = ["Mr.", "Mr", "Mr "]
     salutation_filled = False
+    print(f"    Filling Salutation → {salutation}")
+
+    # Strategy 1: button carries the automation-id directly (not a child of it).
     for sel in [
-        "[data-automation-id='salutation'] button",
-        "[data-automation-id='title'] button",
-        "[data-automation-id='nameTitle'] button",
-        "[data-automation-id='legalNameSection_salutation'] button",
+        "button[data-automation-id='legalNameSection_salutation']",
+        "button[data-automation-id='salutation']",
+        "button[data-automation-id='nameTitle']",
+        "button[data-automation-id='title']",
     ]:
         btn = page.query_selector(sel)
         if btn and btn.is_visible():
             _workday_dropdown(page, btn, salutation, fallbacks=salutation_fallbacks)
             salutation_filled = True
+            print(f"    Salutation filled via Strategy 1 → {salutation}")
             break
+
     if not salutation_filled:
-        # Label-based fallback
+        # Strategy 2: walk up at most 3 parent levels from each visible button.
+        # Check only DIRECT children of each ancestor for a label/legend/div whose
+        # stripped text equals "Salutation" exactly (case-insensitive).
+        # Stop early if we reach FORM, BODY, or MAIN to prevent page-wide false matches.
+        for btn in page.query_selector_all("button"):
+            try:
+                if not btn.is_visible():
+                    continue
+                matched = btn.evaluate("""el => {
+                    const STOP_TAGS = new Set(['FORM', 'BODY', 'MAIN', 'HTML']);
+                    let node = el.parentElement;
+                    for (let i = 0; i < 3; i++) {
+                        if (!node || STOP_TAGS.has(node.tagName)) break;
+                        for (const child of node.children) {
+                            const t = child.textContent.trim().toLowerCase();
+                            if (t === 'salutation' || t === 'salutation *' ||
+                                    t === 'salutation*') return true;
+                        }
+                        node = node.parentElement;
+                    }
+                    return false;
+                }""")
+                if matched:
+                    _workday_dropdown(page, btn, salutation, fallbacks=salutation_fallbacks)
+                    salutation_filled = True
+                    print(f"    Salutation filled via Strategy 2 → {salutation}")
+                    break
+            except Exception:
+                continue
+
+    if not salutation_filled:
+        # Strategy 3: label[for=id] / aria-labelledby fallback — unchanged.
         for lbl in page.query_selector_all("label"):
             lbl_txt = lbl.inner_text().strip().lower()
-            if lbl_txt not in ("salutation", "title", "prefix", "name prefix"):
+            if "salutation" not in lbl_txt:
                 continue
+            # Try label[for] → element id
             for_id = lbl.get_attribute("for")
-            if not for_id:
-                continue
-            el = page.query_selector(f"#{for_id}")
-            if el and el.is_visible():
-                _workday_dropdown(page, el, salutation, fallbacks=salutation_fallbacks)
-                break
+            if for_id:
+                el = page.query_selector(f"#{for_id}")
+                if el and el.is_visible():
+                    _workday_dropdown(page, el, salutation, fallbacks=salutation_fallbacks)
+                    salutation_filled = True
+                    print(f"    Salutation filled via Strategy 3 → {salutation}")
+                    break
+            # Try button[aria-labelledby=label-id]
+            lbl_id = lbl.get_attribute("id")
+            if lbl_id:
+                btn = page.query_selector(f"button[aria-labelledby='{lbl_id}']")
+                if btn and btn.is_visible():
+                    _workday_dropdown(page, btn, salutation, fallbacks=salutation_fallbacks)
+                    salutation_filled = True
+                    print(f"    Salutation filled via Strategy 3 → {salutation}")
+                    break
+
+    if not salutation_filled:
+        print("    WARNING: Salutation not filled — manual intervention may be needed")
 
     # Email
     _safe_fill(page, "input[data-automation-id='email']", a["email"])
@@ -1668,10 +1756,47 @@ def _fill_personal_info(page, applicant: dict, job_title: str, job_desc: str):
 
 
 
+def _count_existing_work_entries(page) -> int:
+    """Count filled work experience entries by their numbered headings.
+    Workday renders each entry with a heading like 'Work Experience 1', 'Work Experience 2', etc.
+    This is simpler and more reliable than counting delete buttons by section scope.
+    """
+    return page.evaluate("""() => {
+        let count = 0;
+        for (const el of document.querySelectorAll('*')) {
+            if (!el.offsetParent) continue;
+            if (el.children.length > 0) continue;  // leaf text nodes only
+            const txt = el.textContent.trim();
+            if (/^Work Experience \\d+$/i.test(txt) ||
+                /^Employment \\d+$/i.test(txt) ||
+                /^Experience \\d+$/i.test(txt)) {
+                count++;
+            }
+        }
+        return count;
+    }""")
+
+
 def _fill_work_experience(page, applicant: dict):
     print("  Filling work experience...")
-    for i, exp in enumerate(applicant["work_experience"]):
-        print(f"    Adding experience {i+1}: {exp['title']} at {exp['company']}")
+
+    # Pre-check: if the form already has entries filled (e.g. from a previous run
+    # that Workday auto-saved), skip adding new ones to prevent duplicates.
+    expected = len(applicant["work_experience"])
+    existing = _count_existing_work_entries(page)
+    if existing >= expected:
+        print(f"    Skipping — {existing} entries already on form (need {expected})")
+        return
+    if existing > 0:
+        print(f"    Found {existing} existing entries — will add the remaining {expected - existing}")
+        # Skip the first `existing` entries from applicant.json
+        entries_to_add = applicant["work_experience"][existing:]
+    else:
+        entries_to_add = applicant["work_experience"]
+
+    for i, exp in enumerate(entries_to_add):
+        global_i = existing + i
+        print(f"    Adding experience {global_i+1}: {exp['title']} at {exp['company']}")
 
         # Always use _click_section_add — it now matches 'Add' AND 'Add Another',
         # and is scoped to the work experience section heading to prevent
@@ -1691,34 +1816,54 @@ def _fill_work_experience(page, applicant: dict):
         _fill_last_blank(page, "Organization", exp["company"])
         _fill_last_blank(page, "Location", DEFAULT_LOCATION)
 
-        # For current job: tick "I currently work here" FIRST so the To field
-        # disappears before we fill dates (prevents React re-render resetting From)
-        is_current = exp["end"] == "Present"
-        if is_current:
-            page.evaluate("""() => {
-                for (const lbl of document.querySelectorAll('label')) {
-                    const t = lbl.textContent.toLowerCase();
-                    if (t.includes('currently work') || t.includes('current employer')) {
-                        const id = lbl.getAttribute('for');
-                        const cb = id ? document.getElementById(id) : lbl.querySelector('input');
-                        if (cb && !cb.checked) { cb.click(); return; }
-                        lbl.click(); return;
-                    }
-                }
-            }""")
-            time.sleep(0.5)  # let To field hide before filling dates
+        # Determine whether this is an active/current role
+        is_current = exp.get("end", "").strip().lower() in ("present", "current", "now", "")
+
+        # Sync "I currently work here" checkbox using Playwright's own .click()
+        # so React's synthetic onChange fires correctly (JS cb.click() bypasses it).
+        # Collect ALL visible "I currently work here" checkboxes (one per entry on the form),
+        # then target the one at index `global_i` — the entry we just added.
+        _CURRENT_WORK_PHRASES = ["currently work", "current employer", "i currently work"]
+        cb_elements = []
+        for lbl in page.query_selector_all("label"):
+            try:
+                lbl_txt = lbl.inner_text().lower()
+                if any(ph in lbl_txt for ph in _CURRENT_WORK_PHRASES):
+                    for_id = lbl.get_attribute("for")
+                    cb = None
+                    if for_id:
+                        cb = page.query_selector(f"#{for_id}")
+                    if not cb:
+                        cb = lbl.query_selector("input[type='checkbox']")
+                    if cb:
+                        cb_elements.append(cb)
+            except Exception:
+                continue
+        cb_element = cb_elements[global_i] if global_i < len(cb_elements) else None
+        if cb_element:
+            try:
+                currently_checked = cb_element.is_checked()
+                if is_current and not currently_checked:
+                    cb_element.click()
+                    print("      'I currently work here' → checked")
+                elif not is_current and currently_checked:
+                    cb_element.click()
+                    print("      'I currently work here' → unchecked")
+            except Exception as e:
+                print(f"      WARNING: could not sync 'currently work here' checkbox: {e}")
+        time.sleep(0.5)  # let To field appear/disappear before filling dates
 
         # Dates — wait explicitly for the date input to render after other fields are filled
         date_appeared = False
         for ph in ["MM/YYYY", "MM / YYYY", "mm/yyyy", "Month/Year"]:
             try:
-                page.wait_for_selector(f"input[placeholder='{ph}']", state="visible", timeout=5000)
+                page.wait_for_selector(f"input[placeholder='{ph}']", state="visible", timeout=800)
                 date_appeared = True
                 break
             except Exception:
                 pass
         if not date_appeared:
-            time.sleep(2.0)  # last-resort extra wait
+            time.sleep(0.8)  # brief extra wait if no date input detected yet
         if not _fill_exp_dates(page, exp["start"], exp["end"], is_current):
             print(f"      Warning: MM/YYYY date inputs not found for '{exp['title']}'")
 
@@ -1727,8 +1872,6 @@ def _fill_work_experience(page, applicant: dict):
         if not _fill_last_blank(page, "Description", desc):
             if not _fill_last_blank(page, "Role Description", desc):
                 _fill_last_blank(page, "Job Description", desc)
-
-        _save_section_form(page)
 
 
 # ===========================================================================
@@ -1766,9 +1909,10 @@ def _fill_field_of_study(page, field: str) -> bool:
 
     try:
         # target_el IS the search input — the label's for= attribute points directly
-        # to the selectinput widget's <input>. Clicking it opens the dropdown panel;
-        # we then type directly into it (no separate panel search box to find).
-        target_el.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+        # to the selectinput widget's <input>. Clicking with Playwright (CDP) produces
+        # isTrusted=true events, ensuring React's event handlers fire correctly.
+        target_el.scroll_into_view_if_needed()
+        target_el.click()
         time.sleep(0.8)
 
         # Wait for the dropdown options to appear
@@ -1777,10 +1921,26 @@ def _fill_field_of_study(page, field: str) -> bool:
         except Exception:
             return False
 
-        # Type the search term directly into target_el
-        target_el.press("Control+a")
-        target_el.press("Delete")
-        target_el.type(field, delay=50)
+        # Some Workday instances show a two-level menu: "Partial List" and "All →".
+        # We must click "All" first to expand the full searchable list.
+        try:
+            all_opts = page.query_selector_all("[data-automation-id='promptOption']")
+            for opt in all_opts:
+                try:
+                    opt_txt = opt.inner_text().strip().lower()
+                    if opt_txt in ("all", "all fields", "show all") or opt_txt.startswith("all "):
+                        opt.scroll_into_view_if_needed()
+                        opt.click()
+                        time.sleep(0.5)
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # Clear existing value then type the search term
+        target_el.click(click_count=3)
+        target_el.type(field, delay=60)
         time.sleep(0.8)
 
         # Log visible options after typing for diagnosis
@@ -1792,54 +1952,51 @@ def _fill_field_of_study(page, field: str) -> bool:
         """)
         print(f"      Options after typing '{field}': {visible_opts}")
 
-        # Click the matching option. If the list is long (no filter applied or partial),
-        # scroll the dropdown container in increments until the option appears in the DOM.
-        clicked = page.evaluate("""async (field) => {
-            const fl = field.toLowerCase();
+        # Strategy 1: Playwright .click() on a matching option (CDP — isTrusted=true).
+        # JS dispatchEvent gives isTrusted=false which Workday's React event system ignores.
+        clicked = None
+        opts = _wait_for_prompt_options(page, timeout=3000)
+        for opt in opts:
+            try:
+                if not opt.is_visible():
+                    continue
+                if field.lower() in opt.inner_text().strip().lower():
+                    opt.scroll_into_view_if_needed()
+                    opt.click()
+                    time.sleep(0.3)
+                    clicked = opt.inner_text().strip()
+                    break
+            except Exception:
+                continue
 
-            function tryClick() {
-                for (const opt of document.querySelectorAll('[data-automation-id="promptOption"]')) {
-                    if (!opt.textContent.trim().toLowerCase().includes(fl)) continue;
-                    opt.scrollIntoView({block: 'center', behavior: 'instant'});
-                    ['mousedown', 'mouseup', 'click'].forEach(t =>
-                        opt.dispatchEvent(new MouseEvent(t, {bubbles: true, cancelable: true, view: window}))
-                    );
-                    return opt.textContent.trim();
-                }
-                return null;
-            }
+        # Strategy 2: ArrowDown + Enter — ONLY when the filtered list already contains
+        # a relevant option (i.e. at least one option text contains the search term).
+        # Without this guard, ArrowDown blindly picks the first alphabetical result
+        # (e.g. "Agricultural Business and Management" when searching "Finance").
+        if not clicked and opts:
+            has_relevant = any(
+                field.lower() in (o.inner_text().strip().lower())
+                for o in opts
+                if o.is_visible()
+            )
+            if has_relevant:
+                try:
+                    target_el.press("ArrowDown")
+                    time.sleep(0.3)
+                    target_el.press("Enter")
+                    time.sleep(0.3)
+                    clicked = field
+                except Exception:
+                    pass
 
-            // Try immediately (works if filter narrowed the list)
-            const immediate = tryClick();
-            if (immediate) return immediate;
-
-            // Find the scrollable container holding the options
-            const firstOpt = document.querySelector('[data-automation-id="promptOption"]');
-            if (!firstOpt) return null;
-            let container = firstOpt.parentElement;
-            while (container && container !== document.body) {
-                if (container.scrollHeight > container.clientHeight + 10) break;
-                container = container.parentElement;
-            }
-            if (!container || container === document.body) return null;
-
-            // Scroll 150px at a time, wait 120ms for virtual list to re-render, then retry
-            for (let i = 0; i < 40; i++) {
-                container.scrollTop += 150;
-                await new Promise(r => setTimeout(r, 120));
-                const found = tryClick();
-                if (found) return found;
-            }
-            return null;
-        }""", field)
-
+        # Strategy 3: radio buttons with matching label text (alternate Workday layout)
         if not clicked:
-            # Fallback: radio buttons with matching label text
             for inp in page.query_selector_all("input[type='radio']"):
                 try:
                     lbl_el = page.query_selector(f"label[for='{inp.get_attribute('id')}']")
                     if lbl_el and field.lower() in lbl_el.inner_text().lower():
-                        inp.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                        inp.scroll_into_view_if_needed()
+                        inp.click()
                         time.sleep(0.3)
                         clicked = field
                         break
@@ -1886,10 +2043,71 @@ def _fill_field_of_study(page, field: str) -> bool:
     return False
 
 
+def _count_existing_edu_entries(page) -> int:
+    """Count how many education entries already exist on the form (by delete buttons)."""
+    return page.evaluate("""() => {
+        const allEls = Array.from(document.querySelectorAll('*'));
+        let sectionStart = -1;
+        let sectionEnd = allEls.length;
+        const STOP_HEADERS = [
+            'languages', 'language', 'skills', 'certifications',
+            'volunteer', 'achievements', 'websites', 'website',
+        ];
+        for (let i = 0; i < allEls.length; i++) {
+            const el = allEls[i];
+            if (!el.offsetParent) continue;
+            const txt = el.textContent.trim().toLowerCase();
+            if ((txt === 'education' || txt.startsWith('education ') || txt.startsWith('education('))
+                && el.children.length === 0) {
+                sectionStart = i;
+                break;
+            }
+        }
+        if (sectionStart === -1) return 0;
+        for (let i = sectionStart + 1; i < allEls.length; i++) {
+            const el = allEls[i];
+            if (!el.offsetParent) continue;
+            const txt = el.textContent.trim().toLowerCase();
+            if (STOP_HEADERS.some(h => txt === h || txt.startsWith(h + ' ') || txt.startsWith(h + '('))) {
+                sectionEnd = i;
+                break;
+            }
+        }
+        let count = 0;
+        for (let i = sectionStart; i < sectionEnd; i++) {
+            const el = allEls[i];
+            if (!el.offsetParent) continue;
+            const tag = el.tagName.toLowerCase();
+            const role = (el.getAttribute('role') || '').toLowerCase();
+            const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+            const txt = el.textContent.trim().toLowerCase();
+            if ((tag === 'button' || role === 'button') &&
+                (ariaLabel.includes('delete') || ariaLabel.includes('remove') ||
+                 txt === 'delete' || txt === 'remove')) {
+                count++;
+            }
+        }
+        return count;
+    }""")
+
+
 def _fill_education(page, applicant: dict, job_title: str = "", job_desc: str = ""):
     print("  Filling education...")
-    for i, edu in enumerate(applicant["education"]):
-        print(f"    Adding education {i+1}: {edu['degree']} at {edu['institution']}")
+
+    expected = len(applicant["education"])
+    existing = _count_existing_edu_entries(page)
+    if existing >= expected:
+        print(f"    Skipping education — {existing} entries already on form (need {expected})")
+        return
+    if existing > 0:
+        print(f"    Found {existing} existing education entries — adding remaining {expected - existing}")
+        entries_to_add = applicant["education"][existing:]
+    else:
+        entries_to_add = applicant["education"]
+
+    for i, edu in enumerate(entries_to_add):
+        global_edu_i = existing + i
+        print(f"    Adding education {global_edu_i+1}: {edu['degree']} at {edu['institution']}")
 
         # Always use section-scoped _click_section_add (matches 'Add' and 'Add Another')
         # so we never accidentally click work experience's 'Add Another' button
@@ -1907,8 +2125,8 @@ def _fill_education(page, applicant: dict, job_title: str = "", job_desc: str = 
                 break
 
         # Degree — find the button near a "Degree" label (not "Field of Study")
-        degree_kw = _degree_level(edu["degree"])
-        print(f"      Degree keyword: '{degree_kw}'")
+        degree_search, degree_fallbacks = _degree_level(edu["degree"])
+        print(f"      Degree search: '{degree_search}'  fallbacks: {degree_fallbacks}")
         degree_filled = False
 
         # Method 0: native <select> near a Degree label (some Workday implementations)
@@ -1932,31 +2150,35 @@ def _fill_education(page, applicant: dict, job_title: str = "", job_desc: str = 
                     if not near_degree:
                         continue
                     options = sel_el.evaluate("el => Array.from(el.options).map(o => ({v: o.value, t: o.text}))")
-                    for opt in options:
-                        if degree_kw.lower() in opt["t"].lower():
-                            sel_el.select_option(value=opt["v"])
-                            degree_filled = True
-                            print(f"      Degree set via native select: {opt['t']}")
+                    for attempt in [degree_search] + degree_fallbacks:
+                        for opt in options:
+                            if attempt.lower() in opt["t"].lower():
+                                sel_el.select_option(value=opt["v"])
+                                degree_filled = True
+                                print(f"      Degree set via native select: {opt['t']}")
+                                break
+                        if degree_filled:
                             break
                     if degree_filled:
                         break
                 except Exception:
                     continue
 
-        # Degree fallback chain used by all methods
-        degree_fallbacks = ["Postgraduate", "Graduate", "Master", "Bachelor", "Professional"]
-
         # Method 1: data-automation-id selectors
-        for deg_sel in [
-            "[data-automation-id='degree'] button",
-            "[data-automation-id='degreeType'] button",
-            "[data-automation-id='educationDegree'] button",
-        ]:
-            deg_btn = page.query_selector(deg_sel)
-            if deg_btn and deg_btn.is_visible():
-                _workday_dropdown(page, deg_btn, degree_kw, fallbacks=degree_fallbacks)
-                degree_filled = True
-                break
+        if not degree_filled:
+            for deg_sel in [
+                "button[data-automation-id='degree']",
+                "button[data-automation-id='degreeType']",
+                "button[data-automation-id='educationDegree']",
+                "[data-automation-id='degree'] button",
+                "[data-automation-id='degreeType'] button",
+                "[data-automation-id='educationDegree'] button",
+            ]:
+                deg_btn = page.query_selector(deg_sel)
+                if deg_btn and deg_btn.is_visible():
+                    _workday_dropdown(page, deg_btn, degree_search, fallbacks=degree_fallbacks)
+                    degree_filled = True
+                    break
 
         # Method 2: find label "Degree" → associated button/select (last one = new form)
         if not degree_filled:
@@ -1975,11 +2197,11 @@ def _fill_education(page, applicant: dict, job_title: str = "", job_desc: str = 
                 el = candidates[-1]  # last = newest form
                 tag = el.evaluate("e => e.tagName")
                 if tag == "BUTTON":
-                    _workday_dropdown(page, el, degree_kw, fallbacks=degree_fallbacks)
+                    _workday_dropdown(page, el, degree_search, fallbacks=degree_fallbacks)
                     degree_filled = True
                 elif tag == "SELECT":
                     options = el.evaluate("e => Array.from(e.options).map(o => o.text)")
-                    for attempt in [degree_kw] + degree_fallbacks:
+                    for attempt in [degree_search] + degree_fallbacks:
                         for opt_txt in options:
                             if attempt.lower() in opt_txt.lower():
                                 el.select_option(label=opt_txt)
@@ -2007,7 +2229,7 @@ def _fill_education(page, applicant: dict, job_title: str = "", job_desc: str = 
                         return false;
                     }""")
                     if near_degree:
-                        _workday_dropdown(page, btn, degree_kw, fallbacks=degree_fallbacks)
+                        _workday_dropdown(page, btn, degree_search, fallbacks=degree_fallbacks)
                         degree_filled = True
                         break
                 except Exception:
@@ -2033,8 +2255,6 @@ def _fill_education(page, applicant: dict, job_title: str = "", job_desc: str = 
             start_yr = edu["start"].split("/")[-1] if edu["start"] else ""
             end_yr   = end_val.split("/")[-1]       if end_val        else ""
             _fill_exp_dates(page, start_yr, end_yr, edu["end"] == "Present")
-
-        _save_section_form(page)
 
 
 # ===========================================================================
@@ -2081,6 +2301,23 @@ def _fill_proficiency_dropdowns(page, level: str, fallback: str):
             btn.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
             opts = _wait_for_prompt_options(page, timeout=2000)
             print(f"      Proficiency ({label_near[:30]}): {[o.inner_text().strip() for o in opts[:5]]}")
+            # Sanity-check: verify the dropdown looks like a proficiency list, not an
+            # education degree list. On pages with both education and language sections,
+            # the DOM walk can find a proficiency label via a distant ancestor and then
+            # accidentally open an education "Select One" button instead.
+            PROFICIENCY_OPTION_WORDS = {
+                "advanced", "intermediate", "beginner", "fluent", "native",
+                "proficient", "basic", "conversational", "limited", "bilingual",
+                "elementary", "classroom", "study", "none",
+            }
+            opt_texts = [o.inner_text().strip().lower() for o in opts[:6] if o.inner_text().strip()]
+            looks_like_proficiency = any(
+                any(w in t for w in PROFICIENCY_OPTION_WORDS) for t in opt_texts
+            )
+            if not looks_like_proficiency:
+                page.keyboard.press("Escape")
+                time.sleep(0.2)
+                continue
             # Try exact level, then fallback, then pick last (highest) available
             matched = False
             for search in [level, fallback]:
@@ -2305,11 +2542,16 @@ def _fill_skills(page, applicant: dict, job_title: str, job_desc: str):
             time.sleep(0.2)
             continue
 
-        # Pick best match — prefer exact substring, fallback to first option
+        # Pick best match — require a close substring match.
+        # No fallback to "first option": a generic search term (e.g. "Valuation") can
+        # return dozens of unrelated variants and we must not blindly accept the first.
         best_opt = None
         skill_lc = skill.lower()
         for opt in opts:
-            opt_txt = opt.inner_text().strip().lower()
+            try:
+                opt_txt = opt.inner_text().strip().lower()
+            except Exception:
+                continue
             # Skip "Search Results (N)" header lines
             if "search result" in opt_txt or opt_txt.isdigit():
                 continue
@@ -2317,12 +2559,10 @@ def _fill_skills(page, applicant: dict, job_title: str, job_desc: str):
                 best_opt = opt
                 break
         if best_opt is None:
-            # Fallback: first non-header option
-            for opt in opts:
-                opt_txt = opt.inner_text().strip().lower()
-                if "search result" not in opt_txt and not opt_txt.isdigit():
-                    best_opt = opt
-                    break
+            print(f"    No close match for '{skill}' in Workday options — skipping")
+            skill_input.press("Escape")
+            time.sleep(0.2)
+            continue
 
         if best_opt:
             # Click the checkbox inside the option (if present), else click the option itself
@@ -2421,15 +2661,111 @@ def _fill_websites(page, applicant: dict):
 
 
 # ===========================================================================
+# QUESTION ROUTING HELPER
+# ===========================================================================
+
+
+def _quick_answer(label: str, applicant: dict, job_title: str, job_desc: str,
+                  company: str = "") -> tuple:
+    """Return (answer, input_type) for a question label without calling Claude if possible.
+
+    input_type is one of: "yes_no", "text", "textarea", or "claude" (must call Claude).
+    "yes_no" answer is "yes" or "no".
+    "text"/"textarea" answer is the string to type.
+    "claude" means no rule matched — caller should pass to _claude_answer().
+    """
+    q = label.lower()
+
+    # ── Work rights / right to work ──
+    # Returns the exact dropdown option text (from config) so _workday_dropdown can
+    # partial-match it, e.g. "Yes - I am a Temporary Resident with Full Working Rights".
+    if any(s in q for s in ["right to work", "work rights", "work in australia",
+                             "legally entitled to work", "authorized to work",
+                             "authorised to work", "eligible to work",
+                             "work legally", "permitted to work"]):
+        if applicant.get("visa", {}).get("authorized_to_work", True):
+            return WORK_RIGHTS_ANSWER, "dropdown"
+        return "No", "dropdown"
+
+    # ── Internal referral / "do you know someone here" ──
+    # Distinct from "How Did You Hear About Us?" — this is a Yes/No question.
+    if any(s in q for s in ["referred by", "been referred", "know anyone",
+                             "someone at", "internal referral", "employee referral"]):
+        work_exp = applicant.get("work_experience", [])
+        cos = [e.get("company", "").lower() for e in work_exp if e.get("company")]
+        answer = "yes" if (company and any(company.lower() in co or co in company.lower()
+                                           for co in cos)) else "no"
+        return answer, "yes_no"
+
+    # ── Years of experience ──
+    if any(s in q for s in ["years of experience", "years experience", "how many years",
+                             "years in a similar", "years relevant"]):
+        return YEARS_EXPERIENCE, "text"
+
+    # ── Salary expectation ──
+    if any(s in q for s in ["salary expectation", "salary range", "expected salary",
+                             "remuneration", "compensation", "package", "salary inclusive",
+                             "base salary", "total salary", "annual salary", "ctc",
+                             "salary expectations"]):
+        # Use single value if question implies one number; range otherwise
+        if any(s in q for s in ["single", "one figure", "number only", "per annum"]):
+            return SALARY_EXPECTATION_SINGLE, "text"
+        return SALARY_EXPECTATION, "text"
+
+    # ── Reason for leaving ──
+    if any(s in q for s in ["reason for leaving", "why are you leaving",
+                             "leaving your current", "why do you want to leave",
+                             "why leave", "reasons for leaving"]):
+        return LEAVING_REASON, "textarea"
+
+    # ── Aboriginal / Torres Strait Islander / Indigenous ──
+    # Type "dropdown" because Workday often renders this as a multi-option list
+    # (e.g. "No", "Yes", "Prefer not to answer") rather than a plain yes/no radio.
+    if any(s in q for s in ["aboriginal", "torres strait", "indigenous", "first nations"]):
+        return INDIGENOUS_STATUS, "dropdown"
+
+    # ── Skills/experience match → must use Claude ──
+    if any(s in q for s in ["skills and experience match", "why are you suitable",
+                             "why do you want this role", "what makes you a good fit",
+                             "describe your experience", "why are you applying",
+                             "what interests you", "tell us about yourself"]):
+        return "", "claude"
+
+    # ── Prior employment at this specific company ──
+    if any(s in q for s in ["previously worked", "former employee", "worked for",
+                             "employed by", "worked at", "prior employment",
+                             "previously employed"]):
+        work_exp = applicant.get("work_experience", [])
+        cos = [e.get("company", "").lower() for e in work_exp if e.get("company")]
+        answer = "yes" if any(co and co in q for co in cos) else "no"
+        return answer, "yes_no"
+
+    return "", "claude"
+
+
+# ===========================================================================
 # SCREENING QUESTIONS
 # ===========================================================================
 
 
 
-def _fill_screening_questions(page, applicant: dict, job_title: str, job_desc: str):
+def _fill_screening_questions(page, applicant: dict, job_title: str, job_desc: str,
+                               company: str = ""):
     """Fill screening/disclosure select dropdowns. Default: No. Age 18+: Yes."""
     print("  Filling screening/disclosure questions...")
     answered = 0
+
+    # Personal-info fields that Workday sometimes renders with "Select One" buttons
+    # but are NOT screening questions — skip them silently.
+    SCREENING_SKIP_LABELS = [
+        "salutation", "title", "given name", "first name", "family name",
+        "last name", "preferred name", "phone", "email", "address",
+        "suburb", "postcode", "state", "region", "country",
+        # Language-section proficiency sub-fields — handled by _fill_proficiency_dropdowns,
+        # not screening questions. Without this, the loop fills them with "No" and then
+        # Workday reverts the field, causing an infinite 50-iteration loop.
+        "comprehension", "overall", "reading", "speaking", "writing", "language",
+    ]
 
     # ── Workday custom dropdown buttons showing "Select One" ──
     # Re-query on every iteration to avoid stale ElementHandle after DOM changes.
@@ -2478,113 +2814,88 @@ def _fill_screening_questions(page, applicant: dict, job_title: str, job_desc: s
             if clean_label.lower().startswith("the field "):
                 clean_label = clean_label[len("the field "):].strip()
 
-            value = _screening_value(clean_label)
-            print(f"    Screening: '{clean_label[:70]}' → {value}")
-
-            # Click via JS to avoid viewport issues
-            target_btn.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-            # Wait for options to appear
-            opts = _wait_for_prompt_options(page, timeout=4000)
-            print(f"      Found {len(opts)} option(s): {[o.inner_text().strip() for o in opts[:5]]}")
+            # Skip personal-info fields that are not screening questions
+            if any(skip in clean_label.lower() for skip in SCREENING_SKIP_LABELS):
+                page.keyboard.press("Escape")
+                time.sleep(0.2)
+                break
 
             # ── Referral / "How Did You Hear About Us?" detection ──
-            # If the label or options indicate a referral-source field, route to
-            # referral logic instead of Yes/No matching.
+            # Check the label BEFORE clicking so we can route to _workday_dropdown
+            # directly — avoids opening the dropdown twice and logging a misleading "→ No".
             REFERRAL_LABEL_SIGNALS = [
-                "hear about", "how did you find", "referral source",
-                "how were you referred", "source of hire", "how did you hear",
+                "hear about us", "how did you find", "referral source",
+                "how did you hear", "learn about this", "how were you referred",
+                "source of hire",
             ]
-            REFERRAL_OPTION_SIGNALS = {
-                "corporate website", "job board", "linkedin", "indeed",
-                "employee", "referral", "recruitment", "agency", "online",
-                "internet", "newspaper", "social media", "glassdoor", "seek",
-            }
-            opt_texts_lower = {o.inner_text().strip().lower() for o in opts}
-            is_referral = (
-                any(sig in clean_label.lower() for sig in REFERRAL_LABEL_SIGNALS)
-                or len(opt_texts_lower & REFERRAL_OPTION_SIGNALS) >= 2
-            )
-
-            if is_referral:
-                preferred = applicant.get("referral_source", "LinkedIn")
-                REFERRAL_FALLBACKS = ["Job Board", "LinkedIn", "Indeed", "Online", "Other"]
-                matched = False
-                for search in [preferred] + REFERRAL_FALLBACKS:
-                    for opt in opts:
-                        try:
-                            if search.lower() in opt.inner_text().strip().lower():
-                                opt.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-                                time.sleep(0.5)
-                                answered += 1
-                                matched = True
-                                break
-                        except Exception:
-                            continue
-                    if matched:
-                        break
-                if not matched and opts:
-                    # Last resort: pick first option
-                    opts[0].evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-                    time.sleep(0.5)
-                    answered += 1
+            if any(sig in clean_label.lower() for sig in REFERRAL_LABEL_SIGNALS):
+                print(f"    Referral: '{clean_label[:70]}' → {REFERRAL_SOURCE}")
+                _workday_dropdown(
+                    page, target_btn, REFERRAL_SOURCE,
+                    fallbacks=["Corporate Website", "Job Board", "LinkedIn",
+                               "Indeed", "Seek", "Online", "Other"],
+                )
+                answered += 1
                 continue  # next Select One button
 
-            # ── Standard Yes/No dropdown ──
-            # Handles Yes/No AND True/False option styles
-            YES_SYNONYMS = {"yes", "true", "agree", "i agree"}
-            NO_SYNONYMS  = {"no", "false", "disagree", "i disagree"}
-            if value.lower() == "yes":
-                accept = YES_SYNONYMS
+            # ── Disability — skip unless the field is explicitly required ──
+            # Disability is a sensitive optional field. Never touch it unless Workday
+            # marks it as required (asterisk in label or aria-required attribute).
+            _IS_DISABILITY_Q = any(s in clean_label.lower() for s in
+                                   ["disability", "disabled", "impairment"])
+            if _IS_DISABILITY_Q:
+                lbl_has_asterisk = "*" in clean_label
+                btn_required = target_btn.evaluate(
+                    "el => el.getAttribute('aria-required') === 'true' || "
+                    "el.closest('[aria-required=\"true\"]') !== null"
+                )
+                if not lbl_has_asterisk and not btn_required:
+                    page.keyboard.press("Escape")
+                    time.sleep(0.2)
+                    continue  # skip this question, keep processing others
+
+            # ── Resolve the answer to select ──
+            # _quick_answer handles all known question types with exact/partial option text.
+            # Fall back to _screening_value (Yes/No default) for everything else.
+            qa_answer, qa_type = _quick_answer(clean_label, applicant, job_title, job_desc,
+                                               company=company)
+            if qa_answer and qa_type not in ("claude", "textarea", "text"):
+                value = qa_answer
+                # For plain yes/no answers, provide synonyms as fallbacks so Workday
+                # variants like "True / False" or "I agree" are also matched.
+                if value.lower() == "yes":
+                    fallbacks = ["Yes", "True", "I agree", "Agree"]
+                elif value.lower() == "no":
+                    fallbacks = ["No", "False", "I disagree", "Disagree"]
+                elif any(s in clean_label.lower() for s in
+                         ["aboriginal", "torres strait", "indigenous", "first nations"]):
+                    # Indigenous identity — Workday forms use many different non-identifying
+                    # option names. Provide all common variants as fallbacks so whichever
+                    # label this particular form uses gets matched.
+                    fallbacks = [
+                        "Neither", "No", "None",
+                        "I do not identify", "Does not identify",
+                        "Prefer not to say", "Prefer not to answer",
+                        "Decline to Answer", "Decline to answer",
+                        "Not Applicable", "N/A",
+                    ]
+                else:
+                    fallbacks = ["Yes", "No"]
             else:
-                accept = NO_SYNONYMS
+                value = _screening_value(clean_label)
+                fallbacks = ["Yes", "No"] if value == "Yes" else ["No", "Yes"]
 
-            matched = False
-            for opt in opts:
-                try:
-                    opt_txt = opt.inner_text().strip().lower()
-                    if opt_txt in accept:
-                        opt.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
-                        time.sleep(0.5)
-                        answered += 1
-                        matched = True
-                        break
-                except Exception:
-                    continue
+            print(f"    Screening: '{clean_label[:70]}' → {value}")
 
-            if not matched:
-                # JS fallback — try synonyms
-                try:
-                    accept_list = list(accept)
-                    js_clicked = page.evaluate("""(vals) => {
-                        const SELS = [
-                            "[data-automation-id='promptOption']",
-                            "[data-automation-id='listItem']",
-                            "li[role='option']", "[role='option']"
-                        ];
-                        for (const sel of SELS) {
-                            for (const el of document.querySelectorAll(sel)) {
-                                const t = (el.textContent || '').trim().toLowerCase();
-                                if (vals.includes(t)) {
-                                    el.scrollIntoView({block:'center'});
-                                    el.click();
-                                    return true;
-                                }
-                            }
-                        }
-                        return false;
-                    }""", accept_list)
-                    if js_clicked:
-                        time.sleep(0.5)
-                        answered += 1
-                        matched = True
-                except Exception:
-                    pass
-
-            if not matched:
-                print(f"      Could not select '{value}' — pressing Escape")
+            # _workday_dropdown handles click, option wait, partial matching, and fallbacks
+            matched = _workday_dropdown(page, target_btn, value, fallbacks=fallbacks)
+            if matched:
+                answered += 1
+            else:
+                print(f"      Could not select '{value}' — pressing Escape and skipping")
                 page.keyboard.press("Escape")
                 time.sleep(0.3)
-                break
+                continue
         except Exception as e:
             print(f"      Screening error: {e}")
             page.keyboard.press("Escape")
@@ -2623,6 +2934,83 @@ def _fill_screening_questions(page, applicant: dict, job_title: str, job_desc: s
                         )
                     answered += 1
                     break
+        except Exception:
+            continue
+
+    # ── Yes/No radio button questions ──
+    # Some Workday forms render boolean questions as radio button pairs rather
+    # than Select One dropdowns. Group radios by name, skip already-answered groups.
+    radio_groups: dict = {}
+    for rb in page.query_selector_all("input[type='radio']"):
+        try:
+            name = rb.get_attribute("name") or ""
+            if not name:
+                continue
+            if name not in radio_groups:
+                radio_groups[name] = []
+            radio_groups[name].append(rb)
+        except Exception:
+            continue
+
+    for name, radios in radio_groups.items():
+        try:
+            # Skip if any radio in the group is already selected
+            if any(rb.is_checked() for rb in radios):
+                continue
+
+            # Resolve question label from the group (walk up from first radio)
+            question_text = radios[0].evaluate("""el => {
+                let node = el.parentElement;
+                for (let i = 0; i < 8; i++) {
+                    if (!node) break;
+                    const lbls = node.querySelectorAll(
+                        'label, [data-automation-id*="Label"], legend, p, span');
+                    for (const l of lbls) {
+                        const t = l.textContent.trim();
+                        if (t.length > 5 && t.length < 400) return t;
+                    }
+                    node = node.parentElement;
+                }
+                return '';
+            }""")
+
+            # Collect the Yes/No option labels
+            options = {}
+            for rb in radios:
+                lbl = rb.evaluate("""el => {
+                    if (el.id) {
+                        const l = document.querySelector('label[for="' + el.id + '"]');
+                        if (l) return l.textContent.trim();
+                    }
+                    const p = el.closest('label');
+                    if (p) return p.textContent.trim();
+                    return el.value || '';
+                }""")
+                options[lbl.strip().lower()] = rb
+
+            if not any(k in options for k in ["yes", "no", "true", "false"]):
+                continue  # not a Yes/No group
+
+            # Determine answer — try pattern rules first, fall back to Claude
+            quick, _ = _quick_answer(question_text, applicant, job_title, job_desc,
+                                     company=company)
+            if quick in ("yes", "no"):
+                answer = quick
+            else:
+                answer = _claude_answer(
+                    question_text, VISA_INFO, applicant,
+                    job_title=job_title, job_desc=job_desc
+                ).lower().strip()
+                if answer not in ("yes", "no"):
+                    answer = "no"
+
+            # Click the matching radio
+            target = options.get(answer) or options.get("true" if answer == "yes" else "false")
+            if target:
+                print(f"    Radio '{question_text[:60]}' → {answer}")
+                target.evaluate("el => { el.scrollIntoView({block:'center'}); el.click(); }")
+                time.sleep(0.3)
+                answered += 1
         except Exception:
             continue
 
@@ -2669,34 +3057,110 @@ def _fill_screening_questions(page, applicant: dict, job_title: str, job_desc: s
 
 
 
-def _fill_custom_questions(page, applicant: dict, job_title: str, job_desc: str):
-    """Find all unanswered visible text/textarea questions and use Claude to answer them."""
+def _fill_custom_questions(page, applicant: dict, job_title: str, job_desc: str,
+                           company: str = ""):
+    """Find all unanswered visible text/textarea inputs and answer them.
+
+    Pattern-matched questions (years experience, salary, leaving reason, etc.) are
+    answered from config without calling Claude. Remaining questions go to Claude.
+    """
     print("  Filling custom questions...")
     questions_answered = 0
 
-    inputs = page.query_selector_all("input[type='text']:visible, textarea:visible")
-    for inp in inputs:
+    SKIP_LABELS = ["extension", "phone ext", "fax", "search", "filter",
+                   "skill", "language", "first name", "last name", "email",
+                   "phone", "address", "postcode", "suburb", "city", "linkedin",
+                   "website", "github", "portfolio", "gpa", "grade"]
+
+    for inp in page.query_selector_all("input[type='text'], textarea"):
         try:
+            if not inp.is_visible():
+                continue
             if inp.input_value().strip():
                 continue
+
+            # Resolve label text — try multiple strategies in order
             label = ""
-            aria = inp.get_attribute("aria-label") or ""
-            placeholder = inp.get_attribute("placeholder") or ""
-            label = aria or placeholder
+            inp_id = inp.get_attribute("id") or ""
+            if inp_id:
+                lbl_el = page.query_selector(f"label[for='{inp_id}']")
+                if lbl_el:
+                    label = lbl_el.inner_text().strip()
             if not label:
-                label_el = page.query_selector(f"label[for='{inp.get_attribute('id')}']")
-                if label_el:
-                    label = label_el.inner_text()
+                # aria-labelledby points to one or more element IDs that form the label
+                aria_lblby = inp.get_attribute("aria-labelledby") or ""
+                if aria_lblby:
+                    parts = []
+                    for lid in aria_lblby.split():
+                        el = page.query_selector(f"#{lid}")
+                        if el:
+                            t = el.inner_text().strip()
+                            if t:
+                                parts.append(t)
+                    label = " ".join(parts)
+            if not label:
+                label = (inp.get_attribute("aria-label") or
+                         inp.get_attribute("placeholder") or "")
+            if not label:
+                # Walk up DOM for a nearby label
+                label = inp.evaluate("""el => {
+                    let node = el.parentElement;
+                    for (let i = 0; i < 6; i++) {
+                        if (!node) break;
+                        for (const l of node.querySelectorAll('label, p, legend')) {
+                            const t = l.textContent.trim();
+                            if (t.length > 4 && t.length < 200) return t;
+                        }
+                        node = node.parentElement;
+                    }
+                    return '';
+                }""")
 
-            if not label or len(label) < 3:
+            if not label or len(label) < 4:
+                continue
+            if any(kw in label.lower() for kw in SKIP_LABELS):
                 continue
 
-            skip_keywords = ["extension", "phone ext", "fax", "search", "filter", "skill", "language"]
-            if any(kw in label.lower() for kw in skip_keywords):
+            # Disability — skip unless explicitly required (asterisk or aria-required)
+            if any(s in label.lower() for s in ["disability", "disabled", "impairment"]):
+                is_required = (
+                    "*" in label
+                    or inp.get_attribute("aria-required") == "true"
+                    or inp.get_attribute("required") is not None
+                )
+                if not is_required:
+                    continue
+
+            # Try pattern rules first
+            answer, input_type = _quick_answer(label, applicant, job_title, job_desc,
+                                               company=company)
+            if input_type == "claude" or not answer:
+                # Detect open-ended textarea questions and use long_form Claude response
+                is_textarea = inp.evaluate("el => el.tagName.toLowerCase()") == "textarea"
+                _LONG_FORM_SIGNALS = [
+                    "explain", "describe", "tell us", "why are you", "what makes",
+                    "skills and experience", "skills match", "suitable", "motivation",
+                    "why do you want", "what interests", "how have you", "provide",
+                    "elaborate", "outline", "summarise", "summarize",
+                ]
+                use_long = is_textarea or any(sig in label.lower() for sig in _LONG_FORM_SIGNALS)
+                answer = _claude_answer(label, VISA_INFO, applicant, job_title, job_desc,
+                                        long_form=use_long)
+
+            if not answer:
                 continue
 
-            answer = _claude_answer(label, "", applicant, job_title, job_desc)
+            print(f"    Custom question: '{label[:60]}' → '{answer[:60]}'")
+            inp.scroll_into_view_if_needed()
+            inp.click()
             inp.fill(answer)
+            # Dispatch React synthetic events so Workday's controlled-component
+            # state updates. Without this, .fill() changes the DOM value but
+            # React's state remains empty, causing "field is required" on submit.
+            inp.evaluate("""el => {
+                el.dispatchEvent(new Event('input',  {bubbles: true}));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+            }""")
             questions_answered += 1
         except Exception:
             continue
@@ -2757,9 +3221,15 @@ def _fill_disclosure_checkboxes(page) -> int:
     JS click() bypasses that and directly toggles the checked state.
     Returns the number of boxes ticked.
     """
-    # On a confirmed disclosure/T&C page every checkbox is an agreement — tick them all.
-    # No label filtering needed because the detection already confirmed the page context.
-    ticked = page.evaluate("""() => {
+    # Tick all unchecked checkboxes on disclosure/T&C pages, but skip any
+    # checkbox whose label mentions a preferred/alternate name option.
+    SKIP_LABEL_FRAGMENTS = [
+        "preferred name", "use a different name", "goes by a different name",
+        "alternate name", "known as",
+        # Work-experience checkboxes — must NOT be ticked by the disclosure sweep
+        "currently work", "i currently work", "current employer",
+    ]
+    ticked = page.evaluate("""(skipFragments) => {
         let n = 0;
         for (const cb of document.querySelectorAll('input[type="checkbox"]')) {
             if (cb.checked) continue;
@@ -2770,11 +3240,23 @@ def _fill_disclosure_checkboxes(page) -> int:
                 node = node.parentElement;
             }
             if (!node) continue;
+            // Resolve the label text for this checkbox
+            let labelText = '';
+            if (cb.id) {
+                const lbl = document.querySelector('label[for="' + cb.id + '"]');
+                if (lbl) labelText = lbl.textContent.trim().toLowerCase();
+            }
+            if (!labelText) {
+                const wrapping = cb.closest('label');
+                if (wrapping) labelText = wrapping.textContent.trim().toLowerCase();
+            }
+            // Skip preferred-name and similar opt-in checkboxes
+            if (skipFragments.some(f => labelText.includes(f))) continue;
             cb.click();
             n++;
         }
         return n;
-    }""")
+    }""", SKIP_LABEL_FRAGMENTS)
     return ticked or 0
 
 
@@ -2785,7 +3267,8 @@ def _fill_disclosure_checkboxes(page) -> int:
 
 
 def fill_application(url: str, job_title: str = "", job_desc: str = "",
-                     resume_pdf: str = "", output_folder: str = ""):
+                     resume_pdf: str = "", output_folder: str = "",
+                     company: str = ""):
     applicant = load_applicant()
 
     with sync_playwright() as p:
@@ -2804,13 +3287,10 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
         page_num = 1
         last_url = ""
         stuck_count = 0
-        # One-time flags — each section filler runs exactly once per application
-        files_uploaded    = False
-        personal_filled   = False
-        work_exp_filled   = False
-        education_filled  = False
-        languages_filled  = False
-        skills_filled     = False
+        # Sections that must run exactly once, tracked as a set of string keys.
+        # Sections NOT in this set run every page (screening, custom_questions,
+        # disclosure, work_authorization).
+        filled_sections: set = set()
 
         while True:
             print(f"\n--- Filling page {page_num} ---")
@@ -2884,41 +3364,44 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
                 detected.append("review")
             print(f"  [Page sections detected]: {detected}")
 
-            if not personal_filled and any(x in page_text for x in ["first name", "last name", "email", "phone", "address"]):
+            if "personal" not in filled_sections and any(x in page_text for x in ["first name", "last name", "email", "phone", "address"]):
                 _fill_personal_info(page, applicant, job_title, job_desc)
-                personal_filled = True
+                filled_sections.add("personal")
 
-            if not work_exp_filled and ("work experience" in page_text or "employment history" in page_text):
+            if "work_exp" not in filled_sections and ("work experience" in page_text or "employment history" in page_text):
                 _fill_work_experience(page, applicant)
-                work_exp_filled = True
+                filled_sections.add("work_exp")
 
-            if not education_filled and "education" in page_text:
+            if "education" not in filled_sections and "education" in page_text:
                 _fill_education(page, applicant, job_title, job_desc)
-                education_filled = True
+                filled_sections.add("education")
 
-            if not languages_filled and "language" in page_text and any(x in page_text for x in ["add", "select one"]):
+            if "languages" not in filled_sections and "language" in page_text and any(x in page_text for x in ["add", "select one"]):
                 _fill_languages(page)
-                languages_filled = True
+                filled_sections.add("languages")
 
-            if not skills_filled and "skill" in page_text and any(x in page_text for x in ["add", "type to add"]):
+            if "skills" not in filled_sections and "skill" in page_text and any(x in page_text for x in ["add", "type to add"]):
                 _fill_skills(page, applicant, job_title, job_desc)
-                skills_filled = True
+                filled_sections.add("skills")
 
-            # File upload — only once, and never re-upload
-            if not files_uploaded and any(x in page_text for x in ["upload", "attach", "resume", "cv"]):
+            # File upload — only once, never re-upload
+            if "files" not in filled_sections and any(x in page_text for x in ["upload", "attach", "resume", "cv"]):
                 if page.query_selector("input[type='file']"):
                     _upload_files(page, resume_pdf, output_folder)
-                    files_uploaded = True
+                    filled_sections.add("files")
 
-            # Websites section
-            if "website" in page_text or "linkedin" in page_text:
+            # Websites — only once
+            if "websites" not in filled_sections and ("website" in page_text or "linkedin" in page_text):
                 _fill_websites(page, applicant)
+                filled_sections.add("websites")
 
-            if any(x in page_text for x in ["visa", "authorized", "sponsorship", "right to work", "work rights"]):
+            # Work authorization — only once
+            if "work_auth" not in filled_sections and any(x in page_text for x in ["visa", "authorized", "sponsorship", "right to work", "work rights"]):
                 _fill_work_authorization(page, applicant, job_title, job_desc)
+                filled_sections.add("work_auth")
 
             # Screening questions — run on every page
-            _fill_screening_questions(page, applicant, job_title, job_desc)
+            _fill_screening_questions(page, applicant, job_title, job_desc, company=company)
 
             # Disclosure / Terms-and-Conditions pages: tick ALL unchecked checkboxes
             if "disclosure" in detected:
@@ -2926,7 +3409,7 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
                 print(f"  Disclosure page: ticked {n} checkbox(es).")
 
             # Fill any remaining unanswered text fields
-            _fill_custom_questions(page, applicant, job_title, job_desc)
+            _fill_custom_questions(page, applicant, job_title, job_desc, company=company)
 
             # (Review sense-check runs later, just before Submit is clicked)
 
@@ -2959,6 +3442,40 @@ def fill_application(url: str, job_title: str = "", job_desc: str = "",
                 print("  Moving to next page...")
                 next_btn.scroll_into_view_if_needed()
                 next_btn.click()
+                time.sleep(1.5)
+
+                # ── Error-retry: if Workday shows "Errors Found", re-fill and retry ──
+                for _retry in range(2):
+                    err_banner = page.query_selector(
+                        "[data-automation-id='errors-found'], "
+                        "[class*='error-container'], "
+                        "[data-automation-id='validationError']"
+                    )
+                    if not err_banner:
+                        # Also check by text in case automation-id varies
+                        try:
+                            err_banner = page.get_by_text("Errors Found", exact=False).first
+                            if not err_banner.is_visible():
+                                err_banner = None
+                        except Exception:
+                            err_banner = None
+                    if not err_banner:
+                        break
+
+                    print(f"  Errors Found banner detected — re-filling and retrying "
+                          f"(attempt {_retry + 1}/2)...")
+                    _fill_screening_questions(page, applicant, job_title, job_desc,
+                                              company=company)
+                    _fill_custom_questions(page, applicant, job_title, job_desc,
+                                           company=company)
+                    time.sleep(0.5)
+                    retry_btn = _find_btn("bottom-navigation-next-btn", "Next",
+                                          "Save and Continue", "saveAndContinueButton")
+                    if retry_btn:
+                        retry_btn.scroll_into_view_if_needed()
+                        retry_btn.click()
+                        time.sleep(1.5)
+
                 # Wait for the new page's React content to fully render
                 try:
                     page.wait_for_load_state("domcontentloaded", timeout=20000)
@@ -3009,4 +3526,5 @@ if __name__ == "__main__":
     url = input("Paste Workday job URL: ").strip()
     job_title = input("Job title (or press Enter to skip): ").strip()
     resume_pdf = input("Path to resume PDF (or press Enter to skip): ").strip()
-    fill_application(url, job_title=job_title, resume_pdf=resume_pdf)
+    company = input("Company name (or press Enter to skip): ").strip()
+    fill_application(url, job_title=job_title, resume_pdf=resume_pdf, company=company)
